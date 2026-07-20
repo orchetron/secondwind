@@ -1,6 +1,6 @@
 {
   "name": "secondwind",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "Lossless, provable token-cost optimizer for LLM agents",
   "bin": { "secondwind": "bin/secondwind.js" },
   "scripts": { "postinstall": "node install.js" },

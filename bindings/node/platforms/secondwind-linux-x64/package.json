@@ -1,6 +1,6 @@
 {
   "name": "secondwind-linux-x64",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "secondwind native library for linux-x64",
   "license": "Apache-2.0",
   "os": [

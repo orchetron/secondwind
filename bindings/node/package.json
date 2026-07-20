@@ -1,7 +1,7 @@
 {
   "name": "secondwind",
-  "version": "0.0.1",
-  "description": "Lossless, provable, model-free LLM context compression",
+  "version": "0.1.0",
+  "description": "Lossless, provable, composable LLM context compression",
   "type": "module",
   "exports": {
     ".": "./secondwind.mjs",
@@ -31,11 +31,11 @@
     "koffi": "^3.1.1"
   },
   "optionalDependencies": {
-    "secondwind-darwin-arm64": "0.0.1",
-    "secondwind-darwin-x64": "0.0.1",
-    "secondwind-linux-x64": "0.0.1",
-    "secondwind-linux-arm64": "0.0.1",
-    "secondwind-win32-x64": "0.0.1"
+    "secondwind-darwin-arm64": "0.1.0",
+    "secondwind-darwin-x64": "0.1.0",
+    "secondwind-linux-x64": "0.1.0",
+    "secondwind-linux-arm64": "0.1.0",
+    "secondwind-win32-x64": "0.1.0"
   },
   "devDependencies": {
     "@ai-sdk/provider": "^4.0.3",

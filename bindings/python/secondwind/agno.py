@@ -1,4 +1,4 @@
-"""Agno integration: lossless, model-free replacement for Agno's tool-result compression.
+"""Agno integration: lossless replacement for Agno's tool-result compression.
 
     from agno.agent import Agent
     from secondwind.agno import SecondwindCompressionManager

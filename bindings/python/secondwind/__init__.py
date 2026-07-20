@@ -1,4 +1,4 @@
-"""secondwind: lossless, provable, model-free LLM context compression.
+"""secondwind: lossless, provable, composable LLM context compression.
 
 Thin ctypes binding over the bundled C ABI (no native extension); the first caller of a C ABI
 every language calls the same way.

@@ -6,7 +6,7 @@
     agent = Agent(model=..., tools=[...], hooks=[SecondwindHooks()])
 
 Registers on AfterToolCallEvent and rewrites each tool result's text before it reaches the model,
-in-process and model-free. Any failure leaves the result untouched.
+in-process. Any failure leaves the result untouched.
 """
 
 try:
