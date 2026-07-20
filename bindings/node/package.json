@@ -31,11 +31,11 @@
     "koffi": "^3.1.1"
   },
   "optionalDependencies": {
-    "secondwind-darwin-arm64": "0.1.0",
-    "secondwind-darwin-x64": "0.1.0",
-    "secondwind-linux-x64": "0.1.0",
-    "secondwind-linux-arm64": "0.1.0",
-    "secondwind-win32-x64": "0.1.0"
+    "@orchetron/secondwind-darwin-arm64": "0.1.0",
+    "@orchetron/secondwind-darwin-x64": "0.1.0",
+    "@orchetron/secondwind-linux-x64": "0.1.0",
+    "@orchetron/secondwind-linux-arm64": "0.1.0",
+    "@orchetron/secondwind-win32-x64": "0.1.0"
   },
   "devDependencies": {
     "@ai-sdk/provider": "^4.0.3",

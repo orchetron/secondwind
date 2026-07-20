@@ -1,6 +1,6 @@
 # Builds and publishes the `secondwind` npm package and its per-platform native packages. Each
 # matrix leg builds the secondwind-ffi cdylib natively for its arch and assembles it into the
-# matching secondwind-<os>-<arch> package; a separate job builds the architecture-independent wasm
+# matching @orchetron/secondwind-<os>-<arch> package; a separate job builds the architecture-independent wasm
 # module. Publishes all of them to npm on a v* tag (platform packages first so the main package's
 # optionalDependencies resolve).
 #
@@ -14,6 +14,11 @@ name: npm
 
 on:
   workflow_dispatch:
+    inputs:
+      publish:
+        description: "Publish to npm (leave unchecked for a build-only dry run)"
+        type: boolean
+        default: false
   push:
     tags: ["v*"]
 
@@ -99,7 +104,7 @@ jobs:
 
   publish:
     needs: [native, wasm]
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') || github.event.inputs.publish == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

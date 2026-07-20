@@ -1,5 +1,5 @@
 {
-  "name": "secondwind-linux-arm64",
+  "name": "@orchetron/secondwind-linux-arm64",
   "version": "0.1.0",
   "description": "secondwind native library for linux-arm64",
   "license": "Apache-2.0",

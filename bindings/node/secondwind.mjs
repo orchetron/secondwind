@@ -8,14 +8,14 @@ import { dirname, join } from "node:path";
 import { existsSync } from "node:fs";
 import { platform, arch } from "node:process";
 
-// Native lib ships as per-platform optional packages (secondwind-<os>-<arch>); npm's os/cpu guard
+// Native lib ships as per-platform optional packages (@orchetron/secondwind-<os>-<arch>); npm's os/cpu guard
 // installs only the matching one. This resolves whichever landed.
 function libraryPath() {
   if (process.env.SECONDWIND_LIB) return process.env.SECONDWIND_LIB;
   const libName = platform === "win32" ? "secondwind.dll" : platform === "darwin" ? "libsecondwind.dylib" : "libsecondwind.so";
   const require = createRequire(import.meta.url);
   try {
-    return require.resolve(`secondwind-${platform}-${arch}/${libName}`);
+    return require.resolve(`@orchetron/secondwind-${platform}-${arch}/${libName}`);
   } catch {
     // fall through to a bundled or source-checkout copy
   }
@@ -24,7 +24,7 @@ function libraryPath() {
   if (existsSync(bundled)) return bundled;
   const dev = join(here, "..", "..", "target", "release", libName);
   if (existsSync(dev)) return dev;
-  throw new Error(`secondwind native library not found for ${platform}-${arch}; set SECONDWIND_LIB or install secondwind-${platform}-${arch}`);
+  throw new Error(`secondwind native library not found for ${platform}-${arch}; set SECONDWIND_LIB or install @orchetron/secondwind-${platform}-${arch}`);
 }
 
 const isBun = typeof globalThis.Bun !== "undefined";

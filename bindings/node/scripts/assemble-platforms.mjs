@@ -22,11 +22,13 @@ const TARGETS = [
 ];
 
 for (const t of TARGETS) {
-  const name = `secondwind-${t.os}-${t.cpu}`;
-  const dir = join(root, "platforms", name);
+  const dirName = `secondwind-${t.os}-${t.cpu}`;
+  const dir = join(root, "platforms", dirName);
   mkdirSync(dir, { recursive: true });
   const pkg = {
-    name,
+    // Scoped under @orchetron so npm's spam filter (which flags bare, templated, unscoped
+    // binary packages) lets the platform packages through; the main package stays unscoped.
+    name: `@orchetron/${dirName}`,
     version,
     description: `secondwind native library for ${t.os}-${t.cpu}`,
     license: "Apache-2.0",
