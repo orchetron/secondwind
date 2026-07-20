@@ -25,14 +25,19 @@ jobs:
         include:
           - target: aarch64-apple-darwin
             os: macos-14
+            nodeplat: darwin-arm64
           - target: x86_64-apple-darwin
             os: macos-14
+            nodeplat: darwin-x64
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
+            nodeplat: linux-x64
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-24.04-arm
+            nodeplat: linux-arm64
           - target: x86_64-pc-windows-msvc
             os: windows-latest
+            nodeplat: win32-x64
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -51,9 +56,12 @@ jobs:
         shell: bash
         run: |
           rel="../../target/${{ matrix.target }}/release"
-          lib=$(ls "$rel"/libsecondwind.dylib "$rel"/libsecondwind.so "$rel"/secondwind.dll 2>/dev/null | head -1)
+          lib=""
+          for cand in "$rel"/libsecondwind.dylib "$rel"/libsecondwind.so "$rel"/secondwind.dll; do
+            if [ -f "$cand" ]; then lib="$cand"; break; fi
+          done
           test -n "$lib" || { echo "no built library found in $rel"; exit 1; }
-          node scripts/assemble-platforms.mjs "$lib"
+          node scripts/assemble-platforms.mjs "$lib" "${{ matrix.nodeplat }}"
 
       - uses: actions/upload-artifact@v4
         with:

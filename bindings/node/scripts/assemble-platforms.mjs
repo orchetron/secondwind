@@ -42,8 +42,13 @@ for (const t of TARGETS) {
 // If a built library was passed, copy it into the package for THIS host's target.
 const builtLib = process.argv[2];
 if (builtLib) {
-  const t = TARGETS.find((t) => t.os === platform && t.cpu === arch);
-  if (!t) throw new Error(`no platform package defined for ${platform}-${arch}`);
+  // Prefer an explicit "<os>-<cpu>" target (argv[3]); the runner's own arch is not reliable once
+  // we cross-compile (the Intel-mac library is built on an Apple Silicon runner).
+  const wanted = process.argv[3];
+  const t = wanted
+    ? TARGETS.find((t) => `${t.os}-${t.cpu}` === wanted)
+    : TARGETS.find((t) => t.os === platform && t.cpu === arch);
+  if (!t) throw new Error(`no platform package defined for ${wanted || `${platform}-${arch}`}`);
   if (!existsSync(builtLib)) throw new Error(`built library not found: ${builtLib}`);
   const dest = join(root, "platforms", `secondwind-${t.os}-${t.cpu}`, t.lib);
   copyFileSync(builtLib, dest);
