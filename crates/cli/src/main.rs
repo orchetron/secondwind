@@ -213,7 +213,7 @@ enum Command {
     },
 }
 
-// Opt-in prose shrink; off by default so the lossless path runs. --prose = model-free
+// Opt-in prose shrink; off by default so the lossless path runs. --prose = built-in
 // sentence summary; --prose-classifier = extractive keep/drop endpoint you own.
 #[derive(clap::Args, Clone)]
 struct ProseArgs {
