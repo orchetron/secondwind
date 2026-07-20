@@ -1,12 +1,12 @@
 # secondwind installer for Windows.
 #
-#   irm https://raw.githubusercontent.com/OWNER/secondwind/main/install.ps1 | iex
+#   irm https://raw.githubusercontent.com/orchetron/secondwind/main/install.ps1 | iex
 #
 # Downloads a checksum-verified binary for this machine. Overrides via env:
 #   SECONDWIND_REPO, SECONDWIND_VERSION, INSTALL_DIR
 $ErrorActionPreference = "Stop"
 
-$repo = if ($env:SECONDWIND_REPO) { $env:SECONDWIND_REPO } else { "OWNER/secondwind" }
+$repo = if ($env:SECONDWIND_REPO) { $env:SECONDWIND_REPO } else { "orchetron/secondwind" }
 $version = if ($env:SECONDWIND_VERSION) { $env:SECONDWIND_VERSION } else { "latest" }
 $dir = if ($env:INSTALL_DIR) { $env:INSTALL_DIR } else { "$env:LOCALAPPDATA\secondwind\bin" }
 

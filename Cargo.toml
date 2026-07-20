@@ -17,7 +17,7 @@ members = [
 version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0"
-repository = "https://github.com/OWNER/secondwind"
+repository = "https://github.com/orchetron/secondwind"
 
 [workspace.dependencies]
 secondwind-core = { path = "crates/core" }

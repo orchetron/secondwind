@@ -1,7 +1,7 @@
 #!/bin/sh
 # secondwind installer.
 #
-#   curl -fsSL https://raw.githubusercontent.com/OWNER/secondwind/main/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/orchetron/secondwind/main/install.sh | sh
 #
 # Downloads a prebuilt, checksum-verified binary for your platform. Falls back to
 # building from source with cargo when no prebuilt binary is published for it.
@@ -13,7 +13,7 @@
 #   SECONDWIND_FROM_SOURCE=1  skip the download, build with cargo
 set -eu
 
-REPO="${SECONDWIND_REPO:-OWNER/secondwind}"
+REPO="${SECONDWIND_REPO:-orchetron/secondwind}"
 VERSION="${SECONDWIND_VERSION:-latest}"
 INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
 BIN="secondwind"
