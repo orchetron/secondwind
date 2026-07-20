@@ -10,6 +10,7 @@ permissions:
 jobs:
   build:
     strategy:
+      fail-fast: false
       matrix:
         include:
           - target: aarch64-apple-darwin
@@ -76,7 +77,7 @@ jobs:
           base="https://github.com/${repo}/releases/download/${GITHUB_REF_NAME}"
           cat > secondwind.rb <<EOF
           class Secondwind < Formula
-            desc "Lossless, provable token-cost optimizer for LLM agents"
+            desc "Lossless, provable, composable LLM context compression"
             homepage "https://github.com/${repo}"
             version "${version}"
             on_macos do
