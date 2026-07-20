@@ -373,7 +373,8 @@ proxy, the store, and the resolve server all run locally.
 - An agent on the Anthropic, OpenAI, or AWS Bedrock API. Claude Code is wired automatically by
   `secondwind setup`. Any other agent points its API base URL at `serve`.
 
-Prebuilt binaries and `cargo install secondwind` will land with the first tagged release.
+Prebuilt binaries land with the first tagged release, alongside `pip install secondwind` and
+`npm install secondwind`. A crates.io publish (`cargo install secondwind`) will follow.
 
 ## Build and test
 
