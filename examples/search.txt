@@ -1,0 +1,34 @@
+src/auth/session.rs:10:    let token = validate(request)?;
+src/auth/mod.rs:17:    fn refresh(&self) -> Result<Token> {
+src/gateway/router.rs:24:    self.store.rotate(token)?;
+src/pool/mod.rs:31:    pub use session::validate;
+src/auth/session.rs:38:    let conn = self.acquire().await?;
+src/auth/mod.rs:45:    return Response::new(401);
+src/gateway/router.rs:52:    let token = validate(request)?;
+src/pool/mod.rs:59:    fn refresh(&self) -> Result<Token> {
+src/auth/session.rs:66:    self.store.rotate(token)?;
+src/auth/mod.rs:73:    pub use session::validate;
+src/gateway/router.rs:80:    let conn = self.acquire().await?;
+src/pool/mod.rs:87:    return Response::new(401);
+src/auth/session.rs:94:    let token = validate(request)?;
+src/auth/mod.rs:101:    fn refresh(&self) -> Result<Token> {
+src/gateway/router.rs:108:    self.store.rotate(token)?;
+src/pool/mod.rs:115:    pub use session::validate;
+src/auth/session.rs:122:    let conn = self.acquire().await?;
+src/auth/mod.rs:129:    return Response::new(401);
+src/gateway/router.rs:136:    let token = validate(request)?;
+src/pool/mod.rs:143:    fn refresh(&self) -> Result<Token> {
+src/auth/session.rs:150:    self.store.rotate(token)?;
+src/auth/mod.rs:157:    pub use session::validate;
+src/gateway/router.rs:164:    let conn = self.acquire().await?;
+src/pool/mod.rs:171:    return Response::new(401);
+src/auth/session.rs:178:    let token = validate(request)?;
+src/auth/mod.rs:185:    fn refresh(&self) -> Result<Token> {
+src/gateway/router.rs:192:    self.store.rotate(token)?;
+src/pool/mod.rs:199:    pub use session::validate;
+src/auth/session.rs:206:    let conn = self.acquire().await?;
+src/auth/mod.rs:213:    return Response::new(401);
+src/gateway/router.rs:220:    let token = validate(request)?;
+src/pool/mod.rs:227:    fn refresh(&self) -> Result<Token> {
+src/auth/session.rs:234:    self.store.rotate(token)?;
+src/auth/mod.rs:241:    pub use session::validate;

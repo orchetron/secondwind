@@ -1,0 +1,40 @@
+[package]
+name = "secondwind"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "secondwind"
+path = "src/main.rs"
+
+# Lets `cargo binstall secondwind` fetch the release binary instead of building.
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-{ target }.{ archive-format }"
+bin-dir = "{ bin }{ binary-ext }"
+pkg-fmt = "tgz"
+
+[package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
+pkg-fmt = "zip"
+
+[dependencies]
+secondwind-analyzers.workspace = true
+secondwind-core.workspace = true
+secondwind-ledger.workspace = true
+secondwind-redact.workspace = true
+serde_json.workspace = true
+secondwind-optimize = { workspace = true, features = ["tiktoken"] }
+secondwind-report.workspace = true
+secondwind-sources.workspace = true
+secondwind-tap.workspace = true
+clap.workspace = true
+tiny_http.workspace = true
+toml_edit = "0.22"
+tokio.workspace = true
+axum.workspace = true
+tower = { version = "0.5", features = ["limit", "load-shed"] }
+tokio-tungstenite.workspace = true
+reqwest.workspace = true
+futures-util.workspace = true
+ureq = { workspace = true, features = ["json"] }

@@ -1,0 +1,50 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/core",
+    "crates/sources",
+    "crates/analyzers",
+    "crates/ledger",
+    "crates/optimize",
+    "crates/ffi",
+    "crates/redact",
+    "crates/report",
+    "crates/tap",
+    "crates/cli",
+]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2024"
+license = "Apache-2.0"
+repository = "https://github.com/OWNER/secondwind"
+
+[workspace.dependencies]
+secondwind-core = { path = "crates/core" }
+secondwind-sources = { path = "crates/sources" }
+secondwind-analyzers = { path = "crates/analyzers" }
+secondwind-ledger = { path = "crates/ledger" }
+secondwind-optimize = { path = "crates/optimize" }
+secondwind-tap = { path = "crates/tap" }
+blake3 = "1"
+tiktoken-rs = "0.6"
+tiny_http = "0.12"
+# gzip stays off so the proxy streams replies raw, byte-for-byte.
+ureq = { version = "2", default-features = false, features = ["tls"] }
+# Async proxy stack: one listener serving HTTP and the WebSocket upgrade Codex
+# uses for its responses transport. reqwest carries no decompression feature so
+# upstream bytes stream back untouched (the same byte-faithful posture as ureq).
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time", "signal"] }
+axum = { version = "0.8", features = ["ws"] }
+tokio-tungstenite = { version = "0.29", features = ["rustls-tls-webpki-roots"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
+futures-util = "0.3"
+secondwind-report = { path = "crates/report" }
+regex = "1"
+secondwind-redact = { path = "crates/redact" }
+serde = { version = "1", features = ["derive"] }
+# preserve_order keeps a rewritten body in the caller's key order, so compression changes
+# only the tool-output strings and leaves every other byte identical (cache-stable, faithful).
+serde_json = { version = "1", features = ["preserve_order"] }
+thiserror = "2"
+clap = { version = "4", features = ["derive"] }

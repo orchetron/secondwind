@@ -1,0 +1,106 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-14
+          - target: x86_64-apple-darwin
+            os: macos-13
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            linker: gcc-aarch64-linux-gnu
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+    runs-on: ${{ matrix.os }}
+    env:
+      MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Cross linker
+        if: matrix.linker
+        run: |
+          sudo apt-get update && sudo apt-get install -y ${{ matrix.linker }}
+          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
+          echo "CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
+      - run: cargo build --release --target ${{ matrix.target }} -p secondwind
+      - name: Sign (macOS, only when a signing identity is configured)
+        if: runner.os == 'macOS' && env.MACOS_SIGN_IDENTITY != ''
+        run: codesign --force --options runtime --timestamp --sign "$MACOS_SIGN_IDENTITY" target/${{ matrix.target }}/release/secondwind
+      - name: Package (unix)
+        if: runner.os != 'Windows'
+        run: tar -C target/${{ matrix.target }}/release -czf secondwind-${{ matrix.target }}.tar.gz secondwind
+      - name: Package (windows)
+        if: runner.os == 'Windows'
+        run: Compress-Archive -Path target/${{ matrix.target }}/release/secondwind.exe -DestinationPath secondwind-${{ matrix.target }}.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: secondwind-${{ matrix.target }}
+          path: |
+            secondwind-${{ matrix.target }}.tar.gz
+            secondwind-${{ matrix.target }}.zip
+          if-no-files-found: ignore
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+          path: dist
+      - name: Checksums
+        working-directory: dist
+        run: sha256sum secondwind-* > SHA256SUMS
+      - name: Homebrew formula
+        working-directory: dist
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          repo="${GITHUB_REPOSITORY}"
+          arm=$(awk '/aarch64-apple-darwin/{print $1}' SHA256SUMS)
+          intel=$(awk '/x86_64-apple-darwin/{print $1}' SHA256SUMS)
+          base="https://github.com/${repo}/releases/download/${GITHUB_REF_NAME}"
+          cat > secondwind.rb <<EOF
+          class Secondwind < Formula
+            desc "Lossless, provable token-cost optimizer for LLM agents"
+            homepage "https://github.com/${repo}"
+            version "${version}"
+            on_macos do
+              on_arm do
+                url "${base}/secondwind-aarch64-apple-darwin.tar.gz"
+                sha256 "${arm}"
+              end
+              on_intel do
+                url "${base}/secondwind-x86_64-apple-darwin.tar.gz"
+                sha256 "${intel}"
+              end
+            end
+            def install
+              bin.install "secondwind"
+            end
+            test do
+              system "#{bin}/secondwind", "--version"
+            end
+          end
+          EOF
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/secondwind-*.tar.gz
+            dist/secondwind-*.zip
+            dist/SHA256SUMS
+            dist/secondwind.rb

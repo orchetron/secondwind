@@ -1,0 +1,19 @@
+[package]
+name = "secondwind-ffi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# The one boundary every language binds to. cdylib for dynamic FFI (ctypes/napi/cgo/JNA),
+# staticlib for embedding. No language gets a privileged path; all call the same C ABI.
+[lib]
+name = "secondwind"
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[dependencies]
+# tiktoken makes the library price in real model tokens, not the byte proxy, so a caller's numbers
+# match the proxy's.
+secondwind-optimize = { workspace = true, features = ["tiktoken"] }
+secondwind-ledger = { workspace = true }
+serde_json = { workspace = true }

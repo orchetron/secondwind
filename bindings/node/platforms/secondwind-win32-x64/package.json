@@ -1,0 +1,15 @@
+{
+  "name": "secondwind-win32-x64",
+  "version": "0.0.1",
+  "description": "secondwind native library for win32-x64",
+  "license": "Apache-2.0",
+  "os": [
+    "win32"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "files": [
+    "secondwind.dll"
+  ]
+}

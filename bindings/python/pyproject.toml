@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "secondwind"
+version = "0.0.1"
+description = "Lossless, provable, model-free LLM context compression"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "Apache-2.0" }
+
+[project.optional-dependencies]
+litellm = ["litellm"]
+
+[tool.setuptools]
+packages = ["secondwind"]
+
+# The prebuilt native library is bundled as package data. See setup.py for the platform wheel tag.
+[tool.setuptools.package-data]
+secondwind = ["_lib/*"]

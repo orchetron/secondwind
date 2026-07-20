@@ -1,0 +1,28 @@
+{
+  "id": "receipt-fabrication-demo",
+  "source": "fixture",
+  "provenance": { "origin": "synthetic", "party": "first-party" },
+  "turns": [
+    {
+      "index": 0,
+      "role": "user",
+      "segments": [
+        {
+          "kind": { "type": "tool-result", "tool": "Grep", "id": "toolu_fx1" },
+          "original": "src/auth.rs:42:let retry_limit = 3;\nsrc/auth.rs:57:const MAX_BACKOFF = 30;",
+          "effective": "src/auth.rs:42:let retry_limit = 5;"
+        }
+      ]
+    },
+    {
+      "index": 1,
+      "role": "assistant",
+      "segments": [
+        {
+          "kind": { "type": "text" },
+          "effective": "The retry limit is configured as 5 in src/auth.rs."
+        }
+      ]
+    }
+  ]
+}

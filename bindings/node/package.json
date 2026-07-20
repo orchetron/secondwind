@@ -1,0 +1,44 @@
+{
+  "name": "secondwind",
+  "version": "0.0.1",
+  "description": "Lossless, provable, model-free LLM context compression",
+  "type": "module",
+  "exports": {
+    ".": "./secondwind.mjs",
+    "./wasm": "./secondwind_wasm.mjs",
+    "./vercel": "./secondwind_vercel.mjs",
+    "./langgraph": "./secondwind_langgraph.mjs"
+  },
+  "files": [
+    "secondwind.mjs",
+    "secondwind_wasm.mjs",
+    "secondwind_vercel.mjs",
+    "secondwind_langgraph.mjs",
+    "backend_bun.mjs",
+    "backend_koffi.mjs",
+    "native/secondwind.wasm",
+    "README.md"
+  ],
+  "scripts": {
+    "assemble-platforms": "node scripts/assemble-platforms.mjs"
+  },
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=18",
+    "bun": ">=1.0.0"
+  },
+  "dependencies": {
+    "koffi": "^3.1.1"
+  },
+  "optionalDependencies": {
+    "secondwind-darwin-arm64": "0.0.1",
+    "secondwind-darwin-x64": "0.0.1",
+    "secondwind-linux-x64": "0.0.1",
+    "secondwind-linux-arm64": "0.0.1",
+    "secondwind-win32-x64": "0.0.1"
+  },
+  "devDependencies": {
+    "@ai-sdk/provider": "^4.0.3",
+    "ai": "^7.0.31"
+  }
+}

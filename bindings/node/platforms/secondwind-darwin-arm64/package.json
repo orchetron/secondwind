@@ -1,0 +1,15 @@
+{
+  "name": "secondwind-darwin-arm64",
+  "version": "0.0.1",
+  "description": "secondwind native library for darwin-arm64",
+  "license": "Apache-2.0",
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "arm64"
+  ],
+  "files": [
+    "libsecondwind.dylib"
+  ]
+}

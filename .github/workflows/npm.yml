@@ -1,0 +1,123 @@
+# Builds and publishes the `secondwind` npm package and its per-platform native packages. Each
+# matrix leg builds the secondwind-ffi cdylib natively for its arch and assembles it into the
+# matching secondwind-<os>-<arch> package; a separate job builds the architecture-independent wasm
+# module. Publishes all of them to npm on a v* tag (platform packages first so the main package's
+# optionalDependencies resolve).
+#
+# Verified locally on macOS arm64: the native build, the assemble script, the loader's platform
+# resolution, the wasm build + wasm-opt, and `npm publish --dry-run` on both a platform package and
+# the main package. The other native legs follow the same steps but have not been run cross-platform.
+#
+# Release note: assemble-platforms.mjs stamps each platform package with the main package's version,
+# so bump bindings/node/package.json (and its optionalDependencies pins) together on release.
+name: npm
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+jobs:
+  native:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-14
+          - target: x86_64-apple-darwin
+            os: macos-13
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Build the native library
+        run: cargo build --release --target ${{ matrix.target }} -p secondwind-ffi
+
+      - name: Assemble the matching platform package
+        working-directory: bindings/node
+        shell: bash
+        run: |
+          rel="../../target/${{ matrix.target }}/release"
+          lib=$(ls "$rel"/libsecondwind.dylib "$rel"/libsecondwind.so "$rel"/secondwind.dll 2>/dev/null | head -1)
+          test -n "$lib" || { echo "no built library found in $rel"; exit 1; }
+          node scripts/assemble-platforms.mjs "$lib"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: platform-${{ matrix.target }}
+          path: bindings/node/platforms/*/
+          if-no-files-found: error
+
+  wasm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Build the wasm module
+        run: cargo build --release --target wasm32-unknown-unknown -p secondwind-ffi
+
+      - name: Optimize and stage the wasm
+        working-directory: bindings/node
+        run: |
+          npm install --no-save binaryen
+          mkdir -p native
+          node node_modules/binaryen/bin/wasm-opt -Oz --strip-debug --strip-dwarf --strip-producers \
+            ../../target/wasm32-unknown-unknown/release/secondwind.wasm -o native/secondwind.wasm
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wasm
+          path: bindings/node/native/secondwind.wasm
+          if-no-files-found: error
+
+  publish:
+    needs: [native, wasm]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Collect the built platform packages and wasm
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Stage artifacts into the package tree
+        working-directory: bindings/node
+        run: |
+          mkdir -p platforms native
+          cp -R ../../artifacts/platform-*/. platforms/
+          cp ../../artifacts/wasm/secondwind.wasm native/secondwind.wasm
+
+      - name: Publish platform packages, then the main package
+        working-directory: bindings/node
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          for dir in platforms/*/; do
+            ( cd "$dir" && npm publish --access public )
+          done
+          npm publish --access public

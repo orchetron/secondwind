@@ -1,0 +1,43 @@
+/target
+.DS_Store
+
+# Python bytecode
+__pycache__/
+*.pyc
+
+# JS deps
+node_modules/
+bindings/python/build/
+bindings/python/dist/
+bindings/python/*.egg-info/
+bindings/python/secondwind/_lib/
+bindings/node/native/
+bindings/node/*.tgz
+bindings/node/package-lock.json
+# platform packages ship a built native lib each; the lib is produced per target in CI, the
+# package.json manifests are tracked.
+bindings/node/platforms/*/*.dylib
+bindings/node/platforms/*/*.so
+bindings/node/platforms/*/*.dll
+
+# Local env and secrets (keep a committed .env.example if you add one)
+.env
+.env.local
+.env.*.local
+
+# Claude Code / agent local settings and session data
+.claude/
+CLAUDE.local.md
+
+# Editors and OS cruft
+.vscode/
+.idea/
+*.swp
+*.swo
+Thumbs.db
+
+# Python virtualenvs and test caches
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/

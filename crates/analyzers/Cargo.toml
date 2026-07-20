@@ -1,0 +1,10 @@
+[package]
+name = "secondwind-analyzers"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+secondwind-core.workspace = true
+serde.workspace = true

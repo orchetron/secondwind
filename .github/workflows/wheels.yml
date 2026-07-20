@@ -1,0 +1,86 @@
+# Builds and publishes the `secondwind` Python wheel for every platform. Each leg builds the
+# secondwind-ffi cdylib natively for its arch, bundles it into the package, and builds a
+# py3-none-<platform> wheel (any Python 3, that OS+arch). Publishes to PyPI on a v* tag.
+#
+# Verified locally on macOS arm64 (the wheel installs in a clean venv and works); the other legs
+# follow the same steps this repo's release.yml already uses, but have not been run cross-platform.
+name: wheels
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-14
+          - target: x86_64-apple-darwin
+            os: macos-13
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Build the native library
+        run: cargo build --release --target ${{ matrix.target }} -p secondwind-ffi
+
+      - name: Bundle the library and build the wheel
+        working-directory: bindings/python
+        shell: bash
+        env:
+          # A low deployment target so the macOS wheel tag is broadly compatible.
+          MACOSX_DEPLOYMENT_TARGET: "11.0"
+        run: |
+          mkdir -p secondwind/_lib
+          rel="../../target/${{ matrix.target }}/release"
+          cp "$rel"/libsecondwind.dylib secondwind/_lib/ 2>/dev/null || true
+          cp "$rel"/libsecondwind.so secondwind/_lib/ 2>/dev/null || true
+          cp "$rel"/secondwind.dll secondwind/_lib/ 2>/dev/null || true
+          python -m pip install --upgrade pip
+          python -m pip wheel . --no-deps -w dist/
+
+      - name: Repair Linux wheel to a manylinux tag
+        if: runner.os == 'Linux'
+        working-directory: bindings/python
+        run: |
+          python -m pip install auditwheel
+          for w in dist/*-linux_*.whl; do
+            auditwheel repair "$w" -w dist/ && rm -f "$w"
+          done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel-${{ matrix.target }}
+          path: bindings/python/dist/*.whl
+
+  publish:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write # PyPI trusted publishing; configure the project on PyPI first
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: wheel-*
+          merge-multiple: true
+          path: dist
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist

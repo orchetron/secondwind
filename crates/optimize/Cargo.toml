@@ -1,0 +1,25 @@
+[package]
+name = "secondwind-optimize"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# The real-tokenizer path prices in model tokens. bpe-openai is a linear-time cl100k/o200k BPE
+# that matches OpenAI's counts exactly (proven by the parity test) but tokenizes far faster than
+# tiktoken-rs, which is now only the dev-only oracle that test compares against.
+[features]
+tiktoken = ["dep:bpe-openai"]
+
+[dependencies]
+secondwind-analyzers.workspace = true
+secondwind-core.workspace = true
+secondwind-ledger.workspace = true
+blake3.workspace = true
+filetime = "0.2"
+bpe-openai = { version = "0.3", optional = true }
+serde = { workspace = true }
+serde_json = { workspace = true, features = ["arbitrary_precision"] }
+
+[dev-dependencies]
+tiktoken-rs = { workspace = true }

@@ -1,0 +1,202 @@
+[
+  {
+    "id": 0,
+    "service": "svc-00",
+    "region": "eu-west-1",
+    "port": 8000,
+    "healthy": false,
+    "version": "1.4.2"
+  },
+  {
+    "id": 1,
+    "service": "svc-01",
+    "region": "us-east-1",
+    "port": 8001,
+    "healthy": true,
+    "version": "1.4.2"
+  },
+  {
+    "id": 2,
+    "service": "svc-02",
+    "region": "eu-west-1",
+    "port": 8002,
+    "healthy": true,
+    "version": "1.4.2"
+  },
+  {
+    "id": 3,
+    "service": "svc-03",
+    "region": "us-east-1",
+    "port": 8003,
+    "healthy": true,
+    "version": "1.4.2"
+  },
+  {
+    "id": 4,
+    "service": "svc-04",
+    "region": "eu-west-1",
+    "port": 8004,
+    "healthy": true,
+    "version": "1.4.2"
+  },
+  {
+    "id": 5,
+    "service": "svc-05",
+    "region": "us-east-1",
+    "port": 8005,
+    "healthy": true,
+    "version": "1.4.2"
+  },
+  {
+    "id": 6,
+    "service": "svc-06",
+    "region": "eu-west-1",
+    "port": 8006,
+    "healthy": true,
+    "version": "1.4.2"
+  },
+  {
+    "id": 7,
+    "service": "svc-07",
+    "region": "us-east-1",
+    "port": 8007,
+    "healthy": false,
+    "version": "1.4.2"
+  },
+  {
+    "id": 8,
+    "service": "svc-08",
+    "region": "eu-west-1",
+    "port": 8008,
+    "healthy": true,
+    "version": "1.4.2"
+  },
+  {
+    "id": 9,
+    "service": "svc-09",
+    "region": "us-east-1",
+    "port": 8009,
+    "healthy": true,
+    "version": "1.4.2"
+  },
+  {
+    "id": 10,
+    "service": "svc-10",
+    "region": "eu-west-1",
+    "port": 8010,
+    "healthy": true,
+    "version": "1.4.2"
+  },
+  {
+    "id": 11,
+    "service": "svc-11",
+    "region": "us-east-1",
+    "port": 8011,
+    "healthy": true,
+    "version": "1.4.2"
+  },
+  {
+    "id": 12,
+    "service": "svc-12",
+    "region": "eu-west-1",
+    "port": 8012,
+    "healthy": true,
+    "version": "1.4.2"
+  },
+  {
+    "id": 13,
+    "service": "svc-13",
+    "region": "us-east-1",
+    "port": 8013,
+    "healthy": true,
+    "version": "1.4.2"
+  },
+  {
+    "id": 14,
+    "service": "svc-14",
+    "region": "eu-west-1",
+    "port": 8014,
+    "healthy": false,
+    "version": "1.4.2"
+  },
+  {
+    "id": 15,
+    "service": "svc-15",
+    "region": "us-east-1",
+    "port": 8015,
+    "healthy": true,
+    "version": "1.4.2"
+  },
+  {
+    "id": 16,
+    "service": "svc-16",
+    "region": "eu-west-1",
+    "port": 8016,
+    "healthy": true,
+    "version": "1.4.2"
+  },
+  {
+    "id": 17,
+    "service": "svc-17",
+    "region": "us-east-1",
+    "port": 8017,
+    "healthy": true,
+    "version": "1.4.2"
+  },
+  {
+    "id": 18,
+    "service": "svc-18",
+    "region": "eu-west-1",
+    "port": 8018,
+    "healthy": true,
+    "version": "1.4.2"
+  },
+  {
+    "id": 19,
+    "service": "svc-19",
+    "region": "us-east-1",
+    "port": 8019,
+    "healthy": true,
+    "version": "1.4.2"
+  },
+  {
+    "id": 20,
+    "service": "svc-20",
+    "region": "eu-west-1",
+    "port": 8020,
+    "healthy": true,
+    "version": "1.4.2"
+  },
+  {
+    "id": 21,
+    "service": "svc-21",
+    "region": "us-east-1",
+    "port": 8021,
+    "healthy": false,
+    "version": "1.4.2"
+  },
+  {
+    "id": 22,
+    "service": "svc-22",
+    "region": "eu-west-1",
+    "port": 8022,
+    "healthy": true,
+    "version": "1.4.2"
+  },
+  {
+    "id": 23,
+    "service": "svc-23",
+    "region": "us-east-1",
+    "port": 8023,
+    "healthy": true,
+    "version": "1.4.2"
+  },
+  {
+    "id": 24,
+    "service": "svc-24",
+    "region": "eu-west-1",
+    "port": 8024,
+    "healthy": true,
+    "version": "1.4.2"
+  }
+]
