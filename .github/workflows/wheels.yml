@@ -20,7 +20,8 @@ jobs:
           - target: aarch64-apple-darwin
             os: macos-14
           - target: x86_64-apple-darwin
-            os: macos-13
+            os: macos-14
+            wheel_plat: macosx-11.0-x86_64
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
           - target: aarch64-unknown-linux-gnu
@@ -52,6 +53,8 @@ jobs:
           cp "$rel"/libsecondwind.dylib secondwind/_lib/ 2>/dev/null || true
           cp "$rel"/libsecondwind.so secondwind/_lib/ 2>/dev/null || true
           cp "$rel"/secondwind.dll secondwind/_lib/ 2>/dev/null || true
+          # Cross-built legs (Intel mac on an Apple Silicon runner) stamp the target wheel tag.
+          if [ -n "${{ matrix.wheel_plat }}" ]; then export _PYTHON_HOST_PLATFORM="${{ matrix.wheel_plat }}"; fi
           python -m pip install --upgrade pip
           python -m pip wheel . --no-deps -w dist/
 
