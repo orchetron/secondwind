@@ -11,6 +11,14 @@
 
 </div>
 
+<p align="center">
+  <img src="examples/demo.gif" width="760" alt="secondwind demo: a coding agent on the left, live token savings on the right">
+</p>
+
+<p align="center">
+  <em>A coding agent on the left. secondwind cutting its tokens on the right, proven lossless, live.</em>
+</p>
+
 Cut the tokens your AI agent sends the model, without losing a value, and prove it.
 
 secondwind sits between your coding agent and the model API. It losslessly compresses the
