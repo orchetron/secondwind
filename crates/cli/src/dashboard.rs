@@ -89,7 +89,11 @@ pub fn watch(home: &Path) -> ExitCode {
                 .join("  \u{b7}  ")
         };
         let mut out = String::from("\u{1b}[H");
-        out.push_str(&format!("  secondwind {dot}  {state}\u{1b}[K\n\u{1b}[K\n"));
+        let rule = "\u{2500}".repeat(46);
+        out.push_str(&format!(
+            "  \u{224b} \u{1b}[1msecondwind\u{1b}[0m   {dot}  {state}\u{1b}[K\n"
+        ));
+        out.push_str(&format!("  \u{1b}[2m{rule}\u{1b}[0m\u{1b}[K\n\u{1b}[K\n"));
         out.push_str(&format!("  {:<14}{}\u{1b}[K\n", "blocks", s.blocks));
         out.push_str(&format!(
             "  {:<14}{}   ({pct:.0}% smaller)\u{1b}[K\n",
@@ -191,7 +195,7 @@ a{color:var(--accent);text-decoration:none}
 
 header{position:sticky;top:0;z-index:20;display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;padding:16px 32px;background:rgba(240,241,244,0.85);backdrop-filter:blur(20px);border-bottom:1px solid rgba(25,35,70,0.07)}
 .brand{display:flex;align-items:center;gap:12px}
-.brand .logo{height:30px;width:auto;display:block}
+.brand .logo{height:44px;width:auto;display:block}
 .brand .sub{font-family:var(--grot);font-size:10px;letter-spacing:0.35em;color:var(--accent);padding-left:12px;border-left:1px solid var(--line)}
 .hmeta{display:flex;align-items:center;gap:24px}
 .hmeta .addr{font-family:var(--grot);font-size:9px;letter-spacing:0.25em;color:var(--muted2)}
