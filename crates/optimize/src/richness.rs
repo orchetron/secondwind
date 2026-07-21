@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 const MIN_ATOM: usize = 6;
 
@@ -27,6 +27,11 @@ pub fn score(original: &str, available: &str) -> Richness {
         };
     }
 
+    // Tokenize `available` once: a value present as a delimited token is an O(1) hit, so the scan
+    // stays linear on large uniform output instead of O(atoms x len). A token is a substring, so
+    // this equals the substring check but skips the scan on the common path.
+    let seen: HashSet<&str> = significant(available).collect();
+
     let n = total as f64;
     let mut total_weight = 0.0;
     let mut kept_weight = 0.0;
@@ -34,7 +39,7 @@ pub fn score(original: &str, available: &str) -> Richness {
     for (atom, &count) in &counts {
         let weight = -(count as f64 / n).log2();
         total_weight += weight;
-        if present(atom, available) {
+        if seen.contains(atom) || present(atom, available) {
             kept_weight += weight;
             kept += 1;
         }
