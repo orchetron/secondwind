@@ -459,20 +459,18 @@ impl RequestShaper for BedrockShaper {
                 {
                     continue;
                 }
-                // Only a lone text/json item is rewritable; multi-item or non-text (image) stays verbatim.
+                // Only a lone text item is rewritable; a structured `json` item, images, and
+                // multi-item content stay verbatim (flattening json to text would change its type).
                 let Some(items) = result.get("content").and_then(Value::as_array) else {
                     continue;
                 };
                 if items.len() != 1 {
                     continue;
                 }
-                let raw = if let Some(text) = items[0].get("text").and_then(Value::as_str) {
-                    text.to_string()
-                } else if let Some(json) = items[0].get("json") {
-                    json.to_string()
-                } else {
+                let Some(text) = items[0].get("text").and_then(Value::as_str) else {
                     continue;
                 };
+                let raw = text.to_string();
                 if let Some(new) = f(&raw, ages[i]) {
                     block["toolResult"]["content"] = serde_json::json!([{ "text": new }]);
                 }
@@ -535,5 +533,34 @@ mod tests {
             Some("touched".to_string())
         });
         assert_eq!(body["input"][0]["output"], "touched");
+    }
+
+    #[test]
+    fn bedrock_leaves_a_structured_json_tool_result_verbatim() {
+        let mut body = json!({"messages": [{"role": "user", "content": [{
+            "toolResult": {"toolUseId": "t1", "content": [{"json": {"rows": [{"id": 1}, {"id": 2}]}}]}
+        }]}]});
+        let before = body.clone();
+        BedrockShaper.rewrite_tool_outputs(&mut body, &HashSet::new(), &mut |raw, _| {
+            Some(format!("SWCOL:{}", raw.len()))
+        });
+        assert_eq!(
+            body, before,
+            "a json tool-result must stay verbatim, not flatten to text"
+        );
+    }
+
+    #[test]
+    fn bedrock_still_compresses_a_text_tool_result() {
+        let mut body = json!({"messages": [{"role": "user", "content": [{
+            "toolResult": {"toolUseId": "t1", "content": [{"text": "a long tool output here"}]}
+        }]}]});
+        BedrockShaper.rewrite_tool_outputs(&mut body, &HashSet::new(), &mut |_, _| {
+            Some("COMPRESSED".to_string())
+        });
+        assert_eq!(
+            body["messages"][0]["content"][0]["toolResult"]["content"][0]["text"],
+            "COMPRESSED"
+        );
     }
 }
