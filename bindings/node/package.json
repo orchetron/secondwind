@@ -1,6 +1,6 @@
 {
   "name": "secondwind",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Lossless, provable, composable LLM context compression",
   "type": "module",
   "exports": {
@@ -32,11 +32,11 @@
     "koffi": "^3.1.1"
   },
   "optionalDependencies": {
-    "@orchetron/secondwind-darwin-arm64": "0.1.2",
-    "@orchetron/secondwind-darwin-x64": "0.1.2",
-    "@orchetron/secondwind-linux-x64": "0.1.2",
-    "@orchetron/secondwind-linux-arm64": "0.1.2",
-    "@orchetron/secondwind-win32-x64": "0.1.2"
+    "@orchetron/secondwind-darwin-arm64": "0.1.3",
+    "@orchetron/secondwind-darwin-x64": "0.1.3",
+    "@orchetron/secondwind-linux-x64": "0.1.3",
+    "@orchetron/secondwind-linux-arm64": "0.1.3",
+    "@orchetron/secondwind-win32-x64": "0.1.3"
   },
   "devDependencies": {
     "@ai-sdk/provider": "^4.0.3",

@@ -1351,7 +1351,7 @@ checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 
 [[package]]
 name = "secondwind"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -1377,7 +1377,7 @@ dependencies = [
 
 [[package]]
 name = "secondwind-analyzers"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "secondwind-core",
  "serde",
@@ -1385,7 +1385,7 @@ dependencies = [
 
 [[package]]
 name = "secondwind-core"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "serde",
  "serde_json",
@@ -1393,7 +1393,7 @@ dependencies = [
 
 [[package]]
 name = "secondwind-ffi"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "secondwind-ledger",
  "secondwind-optimize",
@@ -1402,7 +1402,7 @@ dependencies = [
 
 [[package]]
 name = "secondwind-ledger"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "secondwind-core",
  "serde",
@@ -1411,7 +1411,7 @@ dependencies = [
 
 [[package]]
 name = "secondwind-optimize"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "blake3",
  "bpe-openai",
@@ -1426,7 +1426,7 @@ dependencies = [
 
 [[package]]
 name = "secondwind-redact"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "regex",
  "secondwind-analyzers",
@@ -1436,7 +1436,7 @@ dependencies = [
 
 [[package]]
 name = "secondwind-report"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "secondwind-analyzers",
  "secondwind-core",
@@ -1447,7 +1447,7 @@ dependencies = [
 
 [[package]]
 name = "secondwind-sources"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "secondwind-core",
  "serde",
@@ -1457,7 +1457,7 @@ dependencies = [
 
 [[package]]
 name = "secondwind-tap"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "secondwind-analyzers",
  "secondwind-core",
