@@ -73,6 +73,10 @@ class SecondwindMiddleware:
             return body
         try:
             out = self._session.rewrite(payload)
+            # Nothing compressed: forward the caller's exact bytes. Re-serializing an unchanged
+            # body would shift whitespace and key order and needlessly bust the upstream cache.
+            if not out["stats"].get("blocks_rewritten"):
+                return body
             return json.dumps(out["request"]).encode("utf-8")
         except Exception:  # never break the request
             return body
