@@ -38,6 +38,15 @@ struct Args {
     home: Option<PathBuf>,
 }
 
+// Documents the trace shape the trace-consuming commands (repro, scoreboard, redact) expect.
+const TRACE_FORMAT: &str = "TRACE FORMAT (one JSON object, or one per line for a .jsonl corpus):\n\
+\x20 { \"id\": str, \"source\": str,\n\
+\x20   \"provenance\": { \"origin\": \"real-work\"|\"synthetic\", \"party\": \"first-party\"|\"donated\" },\n\
+\x20   \"turns\": [ { \"index\": int, \"role\": \"system\"|\"user\"|\"assistant\"|\"tool\",\n\
+\x20     \"segments\": [ { \"kind\": { \"type\": \"text\"|\"thinking\"|\"tool-call\"|\"tool-result\" },\n\
+\x20                    \"effective\": str, \"original\"?: str } ] } ] }\n\
+`tap` records this shape; `redact` sanitizes it and prints the same shape.";
+
 #[derive(clap::Subcommand)]
 enum Command {
     #[command(about = "Record original vs on-wire context through a local pass-through proxy")]
@@ -47,10 +56,14 @@ enum Command {
         #[arg(long, default_value = "https://api.anthropic.com")]
         upstream: String,
     },
-    #[command(about = "Re-run the detectors over a stored trace and print its findings")]
+    #[command(
+        about = "Re-run the detectors over a stored trace and print its findings",
+        after_help = TRACE_FORMAT
+    )]
     Repro { fixture: PathBuf },
     #[command(
-        about = "Aggregate a corpus of traces into scoreboard files (refuses unredacted input)"
+        about = "Aggregate a corpus of traces into scoreboard files (refuses unredacted input)",
+        after_help = TRACE_FORMAT
     )]
     Scoreboard {
         #[arg(long, value_name = "DIR")]
@@ -58,7 +71,10 @@ enum Command {
         #[arg(long, value_name = "DIR")]
         out: PathBuf,
     },
-    #[command(about = "Redact secrets and identifying paths from a trace, print sanitized JSON")]
+    #[command(
+        about = "Redact secrets and identifying paths from a trace, print sanitized JSON",
+        after_help = TRACE_FORMAT
+    )]
     Redact { input: PathBuf },
     #[command(about = "Compress one tool-output block through the optimizer, print JSON result")]
     Optimize {
