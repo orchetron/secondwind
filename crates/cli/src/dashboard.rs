@@ -32,7 +32,7 @@ pub fn serve(home: &Path, listen: &str) -> ExitCode {
             let body = serde_json::to_string(&summary).unwrap_or_else(|_| "{}".into());
             Response::from_string(body).with_header(json_header())
         } else {
-            Response::from_string(PAGE).with_header(html_header())
+            Response::from_string(page()).with_header(html_header())
         };
         let _ = request.respond(response);
     }
@@ -148,6 +148,19 @@ fn open_browser(url: &str) {
     let _ = std::process::Command::new(opener).arg(url).spawn();
 }
 
+// The page with the logo embedded as a data URI, built once. Kept inline so the dashboard
+// still issues no network request; the wordmark PNG is bundled at compile time.
+fn page() -> &'static str {
+    use base64::Engine;
+    use std::sync::OnceLock;
+    static RENDERED: OnceLock<String> = OnceLock::new();
+    RENDERED.get_or_init(|| {
+        let logo =
+            base64::engine::general_purpose::STANDARD.encode(include_bytes!("../assets/logo.png"));
+        PAGE.replace("{{LOGO}}", &format!("data:image/png;base64,{logo}"))
+    })
+}
+
 const PAGE: &str = r##"<!doctype html>
 <html lang="en">
 <head>
@@ -177,9 +190,9 @@ a{color:var(--accent);text-decoration:none}
 @media (prefers-reduced-motion:reduce){*{animation:none!important}}
 
 header{position:sticky;top:0;z-index:20;display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;padding:16px 32px;background:rgba(240,241,244,0.85);backdrop-filter:blur(20px);border-bottom:1px solid rgba(25,35,70,0.07)}
-.brand{display:flex;align-items:baseline;gap:14px}
-.brand .name{font-weight:800;letter-spacing:-0.04em;font-size:17px;color:var(--ink)}
-.brand .sub{font-family:var(--grot);font-size:10px;letter-spacing:0.35em;color:var(--accent)}
+.brand{display:flex;align-items:center;gap:12px}
+.brand .logo{height:30px;width:auto;display:block}
+.brand .sub{font-family:var(--grot);font-size:10px;letter-spacing:0.35em;color:var(--accent);padding-left:12px;border-left:1px solid var(--line)}
 .hmeta{display:flex;align-items:center;gap:24px}
 .hmeta .addr{font-family:var(--grot);font-size:9px;letter-spacing:0.25em;color:var(--muted2)}
 .pill{display:flex;align-items:center;gap:8px;border:1px solid var(--line);border-radius:999px;padding:5px 14px}
@@ -302,7 +315,7 @@ footer .m{font-family:var(--grot);font-size:10px;letter-spacing:0.4em;color:var(
 <body>
 <div class="wrap">
 <header>
-  <div class="brand"><span class="name">SECONDWIND</span><span class="sub">PROOF</span></div>
+  <div class="brand"><img class="logo" src="{{LOGO}}" alt="secondwind"><span class="sub">PROOF</span></div>
   <div class="hmeta">
     <span class="addr" id="addr">127.0.0.1 &middot; 1s POLL</span>
     <span class="pill"><span class="dot" id="st-dot"></span><span class="txt" id="st-txt">CONNECTING</span></span>

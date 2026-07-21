@@ -30,6 +30,7 @@ secondwind-sources.workspace = true
 secondwind-tap.workspace = true
 clap.workspace = true
 tiny_http.workspace = true
+base64 = "0.22"
 toml_edit = "0.22"
 tokio.workspace = true
 axum.workspace = true
