@@ -358,6 +358,9 @@ Those are byte reductions. For token reduction (the billed unit), `bench/token_b
 runs a corpus of tool-output shapes with the same per-block fidelity check; method and
 numbers in [bench/](bench/).
 
+Full latency and proxy-throughput numbers, with percentiles and reproduce commands, are in
+[BENCHMARKS.md](BENCHMARKS.md).
+
 ## FAQ
 
 **Does it change how my agent behaves?**
