@@ -104,7 +104,7 @@ main() {
   say "installed $("$INSTALL_DIR/$BIN" --version 2>/dev/null || echo "$BIN") to $INSTALL_DIR"
   path_hint
   say ""
-  say "next:  $BIN doctor    then    $BIN dashboard"
+  say "next:  $BIN check    then    $BIN setup"
 }
 
 main
