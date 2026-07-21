@@ -954,8 +954,8 @@ fn configured_model() -> String {
         .unwrap_or_else(|| "claude-sonnet-4-5".to_string())
 }
 
-// Append one optimization to the shared event log the dashboard reads. Only gated
-// outcomes reach here (verified always true); real tokenizer counts = billed unit.
+// Append one optimization to the shared event log the dashboard reads. Only gated outcomes reach
+// here; verified is re-checked against the original, not assumed. Real tokenizer counts = billed unit.
 #[allow(clippy::too_many_arguments)]
 fn record_event(
     home: &Path,
@@ -979,7 +979,10 @@ fn record_event(
             input_tokens: counter.count(before) as u64,
             output_tokens: counter.count(after) as u64,
             saved_usd,
-            verified: true,
+            verified: secondwind_optimize::certificate::verify(
+                after,
+                &secondwind_optimize::certificate::certify(before),
+            ),
             inline,
             atoms,
             cert,

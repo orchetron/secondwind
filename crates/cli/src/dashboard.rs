@@ -481,7 +481,7 @@ function render(d){
   $("pbar-sent").style.width=sentPct+"%";
   $("pbar-out").textContent=fmtTok(outTok);
   $("pbar-saved").textContent=fmtTok(savedT);
-  $("attest").innerHTML="0 DROPPED &middot; "+verified+"/"+verified+" BLOCKS PROVEN LOSSLESS"+(kept>0?" &middot; "+kept+" KEPT VERBATIM":"")+" &middot; ORIGINALS ONE RESOLVE AWAY";
+  $("attest").innerHTML="0 DROPPED &middot; "+verified+"/"+blocks+" BLOCKS PROVEN LOSSLESS"+(kept>0?" &middot; "+kept+" KEPT VERBATIM":"")+" &middot; ORIGINALS ONE RESOLVE AWAY";
 
   const periods=[
     {k:"LAST HOUR",v:d.saved_hour||0},
@@ -494,7 +494,7 @@ function render(d){
 
   const tiles=[
     {k:"BLOCKS COMPRESSED",v:""+blocks,s:inline+" inline &middot; "+off+" recoverable",c:"var(--ink)"},
-    {k:"VERIFIED LOSSLESS",v:verified+"/"+verified,s:"blake3-certified before apply",c:"var(--teal)"},
+    {k:"VERIFIED LOSSLESS",v:verified+"/"+blocks,s:"blake3-certified, re-checked",c:"var(--teal)"},
     {k:"RECOVERABLE",v:""+off,s:"byte-exact via resolve",c:"var(--accent2)"},
     {k:"TOKENS TO MODEL",v:fmtTok(outTok),s:"down from "+fmtTok(inTok),c:"var(--ink)"}
   ];

@@ -136,7 +136,10 @@ fn handle_call(
                         input_tokens: counter.count(block) as u64,
                         output_tokens: counter.count(&text) as u64,
                         saved_usd,
-                        verified: true,
+                        verified: secondwind_optimize::certificate::verify(
+                            &text,
+                            &secondwind_optimize::certificate::certify(block),
+                        ),
                         inline,
                         atoms,
                         cert,
