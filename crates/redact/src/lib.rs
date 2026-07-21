@@ -44,6 +44,9 @@ const PATTERNS: &[(&str, &str)] = &[
     ("bearer", r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]{16,}"),
 ];
 
+// Home paths collapse to this. It re-matches home_path, so redaction skips it on a second pass.
+const HOME_PLACEHOLDER: &str = "/home/user";
+
 impl Default for Redactor {
     fn default() -> Self {
         Self::new()
@@ -80,16 +83,34 @@ impl Redactor {
             let mut hits = 0;
             out = assignment
                 .replace_all(&out, |caps: &regex::Captures<'_>| {
+                    // Leave an already-masked value untouched: redaction must be idempotent so the
+                    // publish gate, which re-runs the redactor, finds nothing in redacted output.
+                    if caps[3].starts_with("[redacted:") {
+                        return caps[0].to_string();
+                    }
                     hits += 1;
                     format!("{}{}{}", &caps[1], &caps[2], mask("credential", &caps[3]))
                 })
                 .into_owned();
-            *report.by_kind.entry("credential".into()).or_insert(0) += hits;
+            if hits > 0 {
+                *report.by_kind.entry("credential".into()).or_insert(0) += hits;
+            }
         }
         if self.home_path.is_match(&out) {
-            let count = self.home_path.find_iter(&out).count();
-            out = self.home_path.replace_all(&out, "/home/user").into_owned();
-            *report.by_kind.entry("home-path".into()).or_insert(0) += count;
+            let mut hits = 0;
+            out = self
+                .home_path
+                .replace_all(&out, |caps: &regex::Captures<'_>| {
+                    // The placeholder itself matches the pattern; don't recount it on a second pass.
+                    if &caps[0] != HOME_PLACEHOLDER {
+                        hits += 1;
+                    }
+                    HOME_PLACEHOLDER.to_string()
+                })
+                .into_owned();
+            if hits > 0 {
+                *report.by_kind.entry("home-path".into()).or_insert(0) += hits;
+            }
         }
         redact_high_entropy(&out, report)
     }
@@ -248,6 +269,20 @@ mod tests {
         assert!(out.contains("/home/user/some/long/path/name.rs"));
         assert!(out.contains("ordinary words stay"));
         assert_eq!(report.by_kind.get("high-entropy"), Some(&1));
+    }
+
+    #[test]
+    fn redaction_is_idempotent_so_the_publish_gate_accepts_redacted_output() {
+        let raw = "cd /Users/hardy30894/proj && export token=hunter2secretvalue and key sk-ant-api03-abc123def456ghi789 and blob A8f3kZ9qLmXv2Rp7TqWy4Nb6";
+        let (once, first) = redact(raw);
+        assert!(first.total() > 0, "first pass finds and masks secrets");
+        let (twice, second) = redact(&once);
+        assert_eq!(once, twice, "re-redacting redacted text changes nothing");
+        assert_eq!(
+            second.total(),
+            0,
+            "a re-scan of redacted output finds nothing, so the scoreboard publish gate passes"
+        );
     }
 
     #[test]
