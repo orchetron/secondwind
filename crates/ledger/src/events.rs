@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -163,6 +163,7 @@ pub fn summarize(events: &[Event], tz_offset_min: i64) -> Summary {
     let mut cumulative = 0.0;
     let mut cumulative_tokens = 0u64;
     let mut full_curve = Vec::with_capacity(events.len());
+    let mut seen_certs = HashSet::new();
     for event in events {
         // A kept/refused block changed nothing, so it stays out of the compression aggregates (it
         // would only dilute the ratio) and is counted on its own axis with its reason.
@@ -172,6 +173,11 @@ pub fn summarize(events: &[Event], tz_offset_min: i64) -> Summary {
                 .by_kept_reason
                 .entry(event.kept_reason.clone())
                 .or_insert(0) += 1;
+            continue;
+        }
+        // Count each block's content once: a byte-identical block (same certificate) resent after a
+        // restart re-books an event, so dedup by cert to match "never counted again on a re-read".
+        if !event.cert.is_empty() && !seen_certs.insert(event.cert.clone()) {
             continue;
         }
         summary.blocks += 1;
@@ -281,6 +287,20 @@ mod tests {
         assert!((summary.saved_usd - 0.15).abs() < 1e-9);
         assert_eq!(summary.by_transform.get("columnar"), Some(&1));
         assert_eq!(summary.recent.len(), 3);
+    }
+
+    #[test]
+    fn a_resent_block_with_the_same_cert_counts_once() {
+        let mut first = event(0.10, true, true, "columnar");
+        first.cert = "abc123def456".into();
+        // Same content (same cert) re-booked after a restart must not count twice.
+        let resent = first.clone();
+        let summary = summarize(&[first, resent], 0);
+        assert_eq!(
+            summary.blocks, 1,
+            "a byte-identical resent block counts once"
+        );
+        assert_eq!(summary.input_tokens, 100);
     }
 
     #[test]
