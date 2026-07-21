@@ -37,13 +37,15 @@ import { load } from "secondwind/wasm";
 
 const sw = await load();
 const out = sw.compress(block);
-sw.verify(out.wire, out.certificate.hash);  // independently confirm losslessness in the sandbox
+// Inline result: { wire, certificate }. A large block returns a recoverable { stub, marker } instead.
+if (out.wire) sw.verify(out.wire, out.certificate.hash);  // confirm losslessness in the sandbox
 const session = sw.session();
 session.rewrite(request);
 ```
 
-Every result is lossless and independently verifiable (`verify(wire, hash)`); the native library and
-the wasm module are both bundled, so there is no build step and no model download.
+Every result is lossless: an inline wire is independently verifiable with `verify(wire, hash)`, and a
+large block is offloaded to a recoverable marker. The native library and the wasm module are both
+bundled, so there is no build step and no model download.
 
 The wasm module imports nothing from the host (check `WebAssembly.Module.imports` yourself: the list
 is empty), so it has no capability to read a file, open a socket, or read a clock. It takes bytes in

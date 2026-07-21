@@ -7,7 +7,7 @@
 
 **Lossless. Provable. Composable.**
 
-[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](#license) [![Tests](https://img.shields.io/badge/tests-231%20passing-brightgreen.svg)](#build-and-test) [![Fidelity](https://img.shields.io/badge/fidelity-lossless%20by%20proof-8A2BE2.svg)](#how-it-works)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](#license) [![Tests](https://img.shields.io/badge/tests-passing-brightgreen.svg)](#build-and-test) [![Fidelity](https://img.shields.io/badge/fidelity-lossless%20by%20proof-8A2BE2.svg)](#how-it-works)
 
 </div>
 
@@ -92,7 +92,7 @@ export ANTHROPIC_BASE_URL=http://127.0.0.1:8787  # an Anthropic-API agent
 The proxy detects the request shape per request and compresses the tool outputs in it,
 whether the agent speaks the Anthropic Messages, OpenAI Chat Completions, OpenAI
 Responses, or AWS Bedrock Converse format. Anything it cannot prove a win on passes
-through byte for byte.
+through with every value intact.
 
 ### See one block compress
 
@@ -280,8 +280,8 @@ Lossless *and* cheap is easy to get wrong. A few things that make it hold:
 - **Prompt-cache safe.** The provider caches the request prefix, so a block rewritten differently on
   a resend would shift the bytes after it and bust that cache, re-billing at the write premium what
   was reading at `0.1x`. secondwind freezes each block's chosen wire and re-emits it byte-for-byte on
-  every resend, so the cached prefix never moves; the net-cost gate prices cache economics in and
-  refuses any rewrite that would cost more than it saves.
+  every resend, so the cached prefix never moves; a net-cost gate refuses any rewrite that would not
+  save more than it costs.
 - **Best-of-N, proven per block.** Each block runs through every codec that fits (columnar arrays,
   text columns, token and line dictionaries, log templates, offload) and the smallest wire that
   passes the lossless proof wins. A codec you bring competes in the same search under the same

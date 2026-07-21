@@ -154,9 +154,7 @@ const PAGE: &str = r##"<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>secondwind proof</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;500;700;800&family=Space+Grotesk:wght@400;500;700&display=swap" rel="stylesheet">
+<!-- System fonts only; the dashboard makes no network requests. -->
 <style>
 :root{
   --bg:#F0F1F4; --panel:#FFFFFF; --panel2:#F7F8FA; --dark:#16171B;

@@ -24,7 +24,7 @@ The proxy detects the request shape per request and compresses the tool outputs 
 - **AWS Bedrock Converse**: `messages[].content[]` blocks of `toolResult`.
 
 All four are handled out of the box; a request in any of these shapes gets its tool
-outputs compressed, everything else passes through byte-for-byte. A different in-house
+outputs compressed, everything else passes through with every value intact. A different in-house
 format is one `RequestShaper` implementation plus a branch in `pick_shaper` (see
 `crates/optimize/src/shape.rs`).
 

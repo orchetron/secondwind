@@ -54,5 +54,6 @@ session = secondwind.Session(resolver="resolve", offload_dir="~/.secondwind/offl
 session = secondwind.Session(store=MyStore())     # any object with put(id, value) and get(id)
 ```
 
-Every result is lossless and independently verifiable (`secondwind.verify(wire, hash)`); the native
-library is bundled, so there is no build step and no model download.
+Every result is lossless: an inline wire is independently verifiable with `secondwind.verify(wire,
+hash)`, and a large block is offloaded to a recoverable marker. The native library is bundled, so
+there is no build step and no model download.
