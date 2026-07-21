@@ -14,15 +14,17 @@ fn offload_marker(stub: &str) -> Option<&str> {
     Some(&stub[start..end])
 }
 
-// A rewritten leaf is lossless when it is unchanged, or an inline wire that verifies against the
-// original, or an offload stub whose marker resolves back to the original. Nothing else passes.
+// A rewritten leaf is lossless when it is unchanged, an offload stub the store actually recovers, or
+// an inline wire that verifies against the original. A stub's marker matching the certificate is not
+// enough here: the self-proof holds a store, so it demands the blob be present, not just consistent.
 fn leaf_is_lossless(original: &str, rewritten: &str, store: &dyn OffloadStore) -> bool {
-    original == rewritten
-        || certificate::verify(rewritten, &certificate::certify(original))
-        || offload_marker(rewritten)
-            .and_then(|m| store.resolve(m))
-            .as_deref()
-            == Some(original)
+    if original == rewritten {
+        return true;
+    }
+    if let Some(marker) = offload_marker(rewritten) {
+        return store.resolve(marker).as_deref() == Some(original);
+    }
+    certificate::verify(rewritten, &certificate::certify(original))
 }
 
 /// True only if the rewrite differs from the original in string leaves that provably reconstruct or
