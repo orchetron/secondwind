@@ -21,7 +21,7 @@
 
 Cut the tokens your AI agent sends the model, without losing a value, and prove it.
 
-secondwind sits between your coding agent and the model API. It losslessly compresses the
+Secondwind sits between your coding agent and the model API. It losslessly compresses the
 tool output your agent feeds back to the model, proves every value survived, and reports
 exactly how many tokens it removed. Your agent behaves the same. The model just reads
 fewer tokens.
