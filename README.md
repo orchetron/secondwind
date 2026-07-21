@@ -38,16 +38,28 @@ fewer tokens.
 
 Same lossless-and-proven core in all three.
 
-## Quickstart
+## Install
 
-Three commands from a clone of this repo. The first builds the `secondwind` binary (a couple of
-minutes to compile; you need [Rust](https://rustup.rs)). Prefer an in-process library? Jump to
-[Use it in-process](#use-it-in-process-library-and-adapters).
+Pick the surface you want: the proxy is a single binary, each library is one package.
 
 ```sh
-cargo install --path crates/cli   # build and install the `secondwind` binary
-secondwind setup                  # wire Claude Code once (registers the resolve tool)
-secondwind run -- claude          # run your agent through it, get a token receipt
+# CLI / proxy: a prebuilt, checksum-verified binary (falls back to a source build)
+curl -fsSL https://raw.githubusercontent.com/orchetron/secondwind/main/install.sh | sh
+
+pip install secondwind      # Python library and adapters
+npm install secondwind      # Node / Bun library and adapters
+```
+
+Rather build the CLI from source? `cargo install --git https://github.com/orchetron/secondwind
+secondwind` (needs [Rust](https://rustup.rs)), or clone this repo and `cargo install --path crates/cli`.
+
+## Quickstart
+
+Once the CLI is installed, two commands wire it up; then use your agent exactly as you always do:
+
+```sh
+secondwind setup            # wire Claude Code once (registers the resolve tool)
+secondwind run -- claude    # run your agent through it, get a token receipt
 ```
 
 Use Claude Code exactly as you normally would. When the session ends, you get a receipt:
@@ -308,7 +320,7 @@ Lossless *and* cheap is easy to get wrong. A few things that make it hold:
 | `secondwind watch` | live terminal view of savings, refreshed each second (companion to `proof`) |
 | `secondwind check` | verify the install and agent integration |
 | `secondwind optimize <file>` | compress one tool-output block and print the result |
-| `secondwind verify <wire> <cert>` | re-derive a block's fidelity certificate |
+| `secondwind verify <wire> <cert>` | re-check a compressed wire against its fidelity certificate |
 | `secondwind exec -- <cmd>` | compress one command's output, shell-filter style |
 | `secondwind` (no args) | audit what optimization did to your existing sessions |
 
@@ -369,12 +381,15 @@ proxy, the store, and the resolve server all run locally.
 
 ## Requirements
 
-- [Rust](https://rustup.rs) (stable) to build.
 - An agent on the Anthropic, OpenAI, or AWS Bedrock API. Claude Code is wired automatically by
   `secondwind setup`. Any other agent points its API base URL at `serve`.
+- [Rust](https://rustup.rs) (stable) only to build the CLI from source; the install script and the
+  language packages ship prebuilt binaries, so most users need nothing else.
 
-Prebuilt binaries land with the first tagged release, alongside `pip install secondwind` and
-`npm install secondwind`. A crates.io publish (`cargo install secondwind`) will follow.
+The CLI installs from a prebuilt binary (the [install script](#install) or the
+[GitHub releases](https://github.com/orchetron/secondwind/releases)); the libraries are on
+[PyPI](https://pypi.org/project/secondwind/) and [npm](https://www.npmjs.com/package/secondwind). A
+crates.io publish (`cargo install secondwind`) will follow.
 
 ## Build and test
 
