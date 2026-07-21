@@ -74,6 +74,8 @@ pub enum KeptReason {
     Refused(&'static str, Refusal),
     NoNetSaving(netcost::Reason),
     DetectorFired,
+    // Duplicate JSON keys: ambiguous, so kept verbatim rather than compressed.
+    DuplicateKeys,
 }
 
 impl KeptReason {
@@ -90,6 +92,7 @@ impl KeptReason {
             KeptReason::NoNetSaving(netcost::Reason::NotWorthIt) => "no_saving_notworth",
             KeptReason::NoNetSaving(netcost::Reason::UnknownModel) => "no_saving_unknown_model",
             KeptReason::DetectorFired => "detector",
+            KeptReason::DuplicateKeys => "duplicate_keys",
         }
     }
 }
@@ -352,6 +355,14 @@ impl Optimizer {
             }
             return self.compress_text(raw);
         };
+
+        // Duplicate JSON keys are ambiguous (last-wins drops a value); keep the block verbatim so
+        // every value reaches the model, never certified as a compressed-lossless rewrite.
+        if atom::has_duplicate_keys(raw) {
+            return Outcome::KeptVerbatim {
+                reason: KeptReason::DuplicateKeys,
+            };
+        }
 
         for transform in &self.transforms {
             let Some(encoded) = transform.try_encode(&value) else {
@@ -858,6 +869,19 @@ mod tests {
             ),
             "without a resolver the offload path is a no-op, block kept whole"
         );
+    }
+
+    #[test]
+    fn a_duplicate_key_block_is_kept_verbatim_not_compressed() {
+        // Each row has a duplicate "amount" key; last-wins would drop 100, so keep the block whole.
+        let rows: Vec<String> = (0..30)
+            .map(|i| format!(r#"{{"id":{i},"amount":100,"amount":999,"name":"row_{i}"}}"#))
+            .collect();
+        let raw = format!("[{}]", rows.join(","));
+        let Outcome::KeptVerbatim { reason } = Optimizer::default().compress_block(&raw) else {
+            panic!("duplicate-key JSON must be kept verbatim, not compressed");
+        };
+        assert_eq!(reason.as_str(), "duplicate_keys");
     }
 
     #[test]

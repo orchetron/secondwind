@@ -132,9 +132,80 @@ fn write_json_string(s: &str, out: &mut String) {
     out.push('"');
 }
 
+// True if any JSON object in `text` has a duplicate key. The standard parse keeps last-wins and
+// silently drops a value, so such an ambiguous block is kept verbatim, never certified compressed.
+pub fn has_duplicate_keys(text: &str) -> bool {
+    use serde::de::{DeserializeSeed, Deserializer, Error, MapAccess, SeqAccess, Visitor};
+    use std::collections::HashSet;
+    use std::fmt;
+
+    struct Walk;
+    impl<'de> Visitor<'de> for Walk {
+        type Value = bool;
+        fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            f.write_str("any JSON value")
+        }
+        fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<bool, A::Error> {
+            let mut seen = HashSet::new();
+            let mut dup = false;
+            while let Some(key) = map.next_key::<String>()? {
+                dup |= !seen.insert(key);
+                dup |= map.next_value_seed(Walk)?;
+            }
+            Ok(dup)
+        }
+        fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<bool, A::Error> {
+            let mut dup = false;
+            while let Some(child) = seq.next_element_seed(Walk)? {
+                dup |= child;
+            }
+            Ok(dup)
+        }
+        fn visit_bool<E: Error>(self, _: bool) -> Result<bool, E> {
+            Ok(false)
+        }
+        fn visit_i64<E: Error>(self, _: i64) -> Result<bool, E> {
+            Ok(false)
+        }
+        fn visit_u64<E: Error>(self, _: u64) -> Result<bool, E> {
+            Ok(false)
+        }
+        fn visit_f64<E: Error>(self, _: f64) -> Result<bool, E> {
+            Ok(false)
+        }
+        fn visit_str<E: Error>(self, _: &str) -> Result<bool, E> {
+            Ok(false)
+        }
+        fn visit_none<E: Error>(self) -> Result<bool, E> {
+            Ok(false)
+        }
+        fn visit_unit<E: Error>(self) -> Result<bool, E> {
+            Ok(false)
+        }
+    }
+    impl<'de> DeserializeSeed<'de> for Walk {
+        type Value = bool;
+        fn deserialize<D: Deserializer<'de>>(self, d: D) -> Result<bool, D::Error> {
+            d.deserialize_any(Walk)
+        }
+    }
+    let mut de = serde_json::Deserializer::from_str(text);
+    Walk.deserialize(&mut de).unwrap_or(false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn detects_duplicate_keys() {
+        assert!(has_duplicate_keys(r#"{"a":1,"a":2}"#));
+        assert!(has_duplicate_keys(r#"[{"id":1},{"x":1,"y":2,"x":3}]"#));
+        assert!(!has_duplicate_keys(r#"{"a":1,"b":2}"#));
+        assert!(!has_duplicate_keys(r#"[{"a":1},{"a":2}]"#));
+        assert!(!has_duplicate_keys(r#"{"a":{"b":1},"c":[1,2,3],"d":1.50}"#));
+        assert!(!has_duplicate_keys("not json at all"));
+    }
 
     #[test]
     fn number_bytes_are_preserved_exactly() {
