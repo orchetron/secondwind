@@ -7,7 +7,8 @@
     ".": "./secondwind.mjs",
     "./wasm": "./secondwind_wasm.mjs",
     "./vercel": "./secondwind_vercel.mjs",
-    "./langgraph": "./secondwind_langgraph.mjs"
+    "./langgraph": "./secondwind_langgraph.mjs",
+    "./package.json": "./package.json"
   },
   "files": [
     "secondwind.mjs",
