@@ -368,7 +368,12 @@ impl Optimizer {
             let Some(encoded) = transform.try_encode(&value) else {
                 continue;
             };
-            let certificate = match admit(&value, &encoded, |v| transform.try_encode(v)) {
+            let certificate = match admit(
+                &value,
+                &encoded,
+                |v| transform.try_encode(v),
+                !transform.trusted(),
+            ) {
                 Ok(certificate) => certificate,
                 Err(refusal) => {
                     return Outcome::KeptVerbatim {
@@ -692,6 +697,162 @@ impl Transform for CorruptingTransform {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Run: SW_BENCH2=1 cargo test -p secondwind-optimize --release --features tiktoken \
+    //        bench_stage_latency -- --nocapture --test-threads=1
+    #[test]
+    fn bench_stage_latency_and_percentiles() {
+        if std::env::var_os("SW_BENCH2").is_none() {
+            return;
+        }
+        use serde_json::{Value, json};
+        use std::time::Instant;
+
+        fn pct(sorted: &[f64], q: f64) -> f64 {
+            if sorted.is_empty() {
+                return 0.0;
+            }
+            let i = (q * (sorted.len() - 1) as f64).round() as usize;
+            sorted[i.min(sorted.len() - 1)]
+        }
+        fn timeit<F: FnMut()>(m: usize, mut f: F) -> f64 {
+            for _ in 0..(m / 10).max(1) {
+                f();
+            }
+            let t = Instant::now();
+            for _ in 0..m {
+                f();
+            }
+            t.elapsed().as_secs_f64() * 1e6 / m as f64
+        }
+        // A realistic JSON-array tool output of `rows` records (k8s-pod-ish, high cardinality).
+        fn block(rows: usize) -> String {
+            let v: Vec<Value> = (0..rows)
+                .map(|i| {
+                    json!({
+                        "name": format!("pod-{i}"),
+                        "ns": format!("team-{}", i % 12),
+                        "status": if i % 7 == 0 { "Pending" } else { "Running" },
+                        "restarts": i % 5,
+                        "cpu_m": (i * 37) % 2000,
+                        "mem_mi": (i * 53) % 8192,
+                        "ip": format!("10.{}.{}.{}", i % 256, (i / 256) % 256, i % 254 + 1),
+                        "node": format!("node-{}", i % 20),
+                        "age_s": i * 13
+                    })
+                })
+                .collect();
+            serde_json::to_string(&v).unwrap()
+        }
+
+        #[cfg(feature = "tiktoken")]
+        let (mk, unit) = (
+            || {
+                Optimizer::default()
+                    .with_counter(std::sync::Arc::new(crate::tokens::Tiktoken::cl100k()))
+            },
+            "tokens",
+        );
+        #[cfg(not(feature = "tiktoken"))]
+        let (mk, unit) = (Optimizer::default, "bytes");
+
+        eprintln!("\n=== full compress_block latency (release, warm; counter={unit}; us/call) ===");
+        eprintln!(
+            "{:>6} {:>9} {:>8}  {:>7} {:>7} {:>7} {:>7} {:>8} {:>8}  transform",
+            "rows", "bytes", "~tok", "p50", "p90", "p95", "p99", "p99.9", "max"
+        );
+        for &rows in &[15usize, 200, 2000] {
+            let (psize, warm, n) = match rows {
+                r if r <= 20 => (256usize, 64usize, 8000usize),
+                r if r <= 400 => (256, 32, 2500),
+                _ => (48, 8, 400),
+            };
+            let pool: Vec<String> = (0..psize).map(|s| block(rows + s % 9)).collect();
+            let mut opt = mk();
+            for b in pool.iter().take(warm) {
+                std::hint::black_box(opt.compress_block(b));
+            }
+            let mut ds = Vec::with_capacity(n);
+            let mut tf = "verbatim";
+            for k in 0..n {
+                let b = &pool[k % pool.len()];
+                let t = Instant::now();
+                let out = opt.compress_block(b);
+                ds.push(t.elapsed().as_secs_f64() * 1e6);
+                tf = match &out {
+                    Outcome::Compressed { transform, .. } => transform,
+                    Outcome::Offloaded { .. } => "offload",
+                    _ => "verbatim",
+                };
+            }
+            let toks = opt.count(&pool[0]);
+            ds.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            eprintln!(
+                "{:>6} {:>9} {:>8}  {:>7.1} {:>7.1} {:>7.1} {:>7.1} {:>8.1} {:>8.1}  {}",
+                rows,
+                pool[0].len(),
+                toks,
+                pct(&ds, 0.50),
+                pct(&ds, 0.90),
+                pct(&ds, 0.95),
+                pct(&ds, 0.99),
+                pct(&ds, 0.999),
+                ds.last().copied().unwrap_or(0.0),
+                tf
+            );
+        }
+
+        eprintln!("\n=== stage breakdown on a 200-row block (mean us/call) ===");
+        let raw = block(200);
+        let value: Value = serde_json::from_str(&raw).unwrap();
+        let opt = mk();
+        let m = 1500;
+        let parse = timeit(m, || {
+            std::hint::black_box(serde_json::from_str::<Value>(&raw).ok());
+        });
+        let dup = timeit(m, || {
+            std::hint::black_box(atom::has_duplicate_keys(&raw));
+        });
+        let enc = timeit(m, || {
+            std::hint::black_box(opt.transforms[0].try_encode(&value));
+        });
+        let encoded = opt.transforms[0].try_encode(&value).unwrap();
+        let trusted = opt.transforms[0].trusted();
+        let adm = timeit(m, || {
+            std::hint::black_box(
+                admit(
+                    &value,
+                    &encoded,
+                    |v| opt.transforms[0].try_encode(v),
+                    !trusted,
+                )
+                .is_ok(),
+            );
+        });
+        let price = timeit(m, || {
+            std::hint::black_box(opt.priced(&raw, &encoded.wire));
+        });
+        let canon = atom::canonicalize(&value);
+        let det = timeit(m, || {
+            std::hint::black_box(detectorgate::detector_findings(&canon, &encoded.wire));
+        });
+        let mut opt2 = mk();
+        let full = timeit(800, || {
+            std::hint::black_box(opt2.compress_block(&raw));
+        });
+        eprintln!("  parse (serde_json)        {parse:>7.1}");
+        eprintln!("  dup-key scan              {dup:>7.1}");
+        eprintln!("  codec encode (columnar)   {enc:>7.1}");
+        eprintln!("  admit (clmh + witness)    {adm:>7.1}   (re-encodes for idempotence)");
+        eprintln!("  priced (tokenize)         {price:>7.1}");
+        eprintln!("  detector suite            {det:>7.1}");
+        eprintln!("  ------------------------------------");
+        eprintln!(
+            "  sum of stages             {:>7.1}",
+            parse + dup + enc + adm + price + det
+        );
+        eprintln!("  full compress_block       {full:>7.1}");
+    }
 
     // A host-supplied codec that only fires on a long single-character run. Lossless by construction.
     struct Rle;

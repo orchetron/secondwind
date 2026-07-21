@@ -44,7 +44,13 @@ fn faithful_columnar_transform_is_admitted_and_smaller() {
 fn value_corrupting_transform_is_refused() {
     let value: serde_json::Value = serde_json::from_str(UNIFORM).unwrap();
     let encoded = CorruptingTransform.try_encode(&value).unwrap();
-    let err = admit(&value, &encoded, |v| CorruptingTransform.try_encode(v)).unwrap_err();
+    let err = admit(
+        &value,
+        &encoded,
+        |v| CorruptingTransform.try_encode(v),
+        true,
+    )
+    .unwrap_err();
     assert_eq!(err, Refusal::ClmhMismatch);
 }
 

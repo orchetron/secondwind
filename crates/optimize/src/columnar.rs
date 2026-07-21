@@ -43,6 +43,13 @@ impl Transform for Columnar {
         "columnar"
     }
 
+    // Built-in, fuzzed round trip (see tests/fuzz.rs): admission skips the per-block idempotence
+    // re-encode, which roughly halved this codec's cost since it was running once in the search and
+    // again in the check. Losslessness is unchanged: CLMH + inverse witness still run every block.
+    fn trusted(&self) -> bool {
+        true
+    }
+
     fn try_encode(&self, value: &Value) -> Option<Encoded> {
         let items = value.as_array()?;
         if items.len() < 2 {

@@ -9,6 +9,13 @@ pub struct Encoded {
 pub trait Transform {
     fn id(&self) -> &'static str;
     fn try_encode(&self, value: &Value) -> Option<Encoded>;
+    // A trusted, exhaustively-fuzzed built-in codec whose fixed-point stability need not be
+    // re-verified per block: its per-block losslessness is still proven by the CLMH + inverse
+    // witness, so admission may skip the (expensive) idempotence re-encode. Host-supplied codecs
+    // default to false and keep the per-block idempotence check, so a reckless one is still caught.
+    fn trusted(&self) -> bool {
+        false
+    }
 }
 
 // An aggressive, only-sometimes-correct text codec: the optimizer proves decode(encode(raw)) == raw per
