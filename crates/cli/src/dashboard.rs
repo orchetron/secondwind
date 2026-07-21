@@ -347,7 +347,7 @@ footer .m{font-family:var(--grot);font-size:10px;letter-spacing:0.4em;color:var(
       <p>Token counts we can prove, not dollars we would guess. Counted once when compressed, never again on a cache re-read. We do not estimate your bill.</p>
       <div class="divider">
         <div class="proj-row"><span class="k">Information kept</span><span class="v" style="color:var(--teal)">100%</span></div>
-        <p>Nothing dropped. Every value is inline or recoverable byte-for-byte, verified per block by a blake3 certificate.</p>
+        <p>Nothing dropped. Every value is inline or recoverable, verified per block by a blake3 certificate.</p>
       </div>
     </div>
   </section>
@@ -361,7 +361,7 @@ footer .m{font-family:var(--grot);font-size:10px;letter-spacing:0.4em;color:var(
         <div class="splitbar"><div class="in" id="fid-in" style="width:0%"></div><div class="off"></div></div>
         <div class="splitleg"><span>PRESENT INLINE &middot; <span id="fid-inline">0</span></span><span>RECOVERABLE VIA RESOLVE &middot; <span id="fid-off">0</span></span></div>
       </div>
-      <p>Every value the model could need is either still in context, or its exact original sits in the local store: <span class="grot" style="color:var(--accent2)">secondwind resolve &lt;marker&gt;</span> returns it byte for byte.</p>
+      <p>Every value the model could need is either still in context, or its original sits in the local store: <span class="grot" style="color:var(--accent2)">secondwind resolve &lt;marker&gt;</span> returns it in full.</p>
     </div>
     <div class="card cert">
       <span class="lbl">FIDELITY CERTIFICATE</span>
