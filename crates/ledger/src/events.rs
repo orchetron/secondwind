@@ -16,6 +16,8 @@ pub struct Event {
     pub transform: String,
     pub input_tokens: u64,
     pub output_tokens: u64,
+    // Internal only: never persisted or served. The surface talks tokens, not dollars.
+    #[serde(skip)]
     pub saved_usd: f64,
     pub verified: bool,
     pub inline: bool,
@@ -86,6 +88,7 @@ pub fn load(home: &Path) -> Vec<Event> {
 #[derive(Debug, Clone, Serialize)]
 pub struct Point {
     pub at_ms: u64,
+    #[serde(skip)]
     pub cumulative_usd: f64,
     pub cumulative_tokens: u64,
 }
@@ -103,6 +106,7 @@ pub struct Summary {
     pub verified: u64,
     pub input_tokens: u64,
     pub output_tokens: u64,
+    #[serde(skip)]
     pub saved_usd: f64,
     pub by_transform: BTreeMap<String, u64>,
     pub transform_saved: BTreeMap<String, u64>,
