@@ -1,6 +1,6 @@
 use serde_json::Value;
 
-use crate::{atom, columnar, dict, lines, log, search, text_columnar};
+use crate::{atom, columnar, dict, lines, log, offload, search, text_columnar};
 
 // Portable fidelity proof: hash of the canonical original. Anyone can decode a wire,
 // recompute the hash, and confirm losslessness without trusting the compressor.
@@ -15,9 +15,12 @@ pub fn certify(original: &str) -> Certificate {
     }
 }
 
-// True when the wire decodes to content whose canonical hash matches the certificate.
-// Offloaded blocks verify against their resolved body through the same hash.
+// Faithful when: an inline wire decodes to the certified content, verbatim content is its own
+// source, or an offload stub's marker is this certificate's 16-hex prefix (bytes live in the store).
 pub fn verify(wire: &str, certificate: &Certificate) -> bool {
+    if let Some(id) = offload::embedded_marker_id(wire) {
+        return certificate.hash.starts_with(id);
+    }
     reconstruct(wire).is_some_and(|canonical| hash(&canonical) == certificate.hash)
 }
 
@@ -40,7 +43,8 @@ fn reconstruct(wire: &str) -> Option<String> {
     if let Some(text) = lines::decode(wire) {
         return Some(canonical(&text));
     }
-    None
+    // No codec matched: verbatim content is its own canonical source.
+    Some(canonical(wire))
 }
 
 fn canonical(text: &str) -> String {
@@ -108,5 +112,26 @@ mod tests {
             .unwrap()
             .wire;
         assert!(!verify(&wire, &certify("[{\"id\":999}]")));
+    }
+
+    #[test]
+    fn an_offload_stub_verifies_against_its_certificate() {
+        let raw = array();
+        let cert = certify(&raw);
+        let stub = format!("[18900 bytes offloaded <<swload:{}>>]", &cert.hash[..16]);
+        assert!(verify(&stub, &cert));
+        assert!(
+            !verify(&stub, &certify("[{\"id\":999}]")),
+            "wrong block must not verify"
+        );
+    }
+
+    #[test]
+    fn verbatim_recovered_content_is_its_own_source() {
+        let raw = array();
+        let cert = certify(&raw);
+        assert!(verify(&raw, &cert), "the recovered original must verify");
+        let tampered = raw.replace("user_0", "user_X");
+        assert!(!verify(&tampered, &cert));
     }
 }

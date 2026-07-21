@@ -147,6 +147,14 @@ impl Store {
             return None;
         }
         let body = std::fs::read_to_string(&path).ok()?;
+        // The marker id is the content hash; a tampered blob must not resolve to the wrong bytes.
+        let canonical = match serde_json::from_str::<Value>(&body) {
+            Ok(value) => canonicalize(&value),
+            Err(_) => body.clone(),
+        };
+        if &hash(&canonical)[..16] != id {
+            return None;
+        }
         // Touch on read so a marker still in active use never ages out from under a long session.
         touch(&path);
         Some(body)
@@ -316,6 +324,14 @@ fn touch(path: &Path) {
 
 fn marker_id(marker: &str) -> Option<&str> {
     marker.strip_prefix("<<swload:")?.strip_suffix(">>")
+}
+
+// The 16-hex offload marker id embedded in a stub (which also carries a preview), if well-formed.
+pub fn embedded_marker_id(text: &str) -> Option<&str> {
+    let start = text.find("<<swload:")? + "<<swload:".len();
+    let end = text[start..].find(">>")? + start;
+    let id = &text[start..end];
+    (id.len() == 16 && id.bytes().all(|b| b.is_ascii_hexdigit())).then_some(id)
 }
 
 // Preview size scales with the block; this fraction is the one savings-vs-preview knob.
@@ -591,6 +607,37 @@ mod tests {
         assert!(out.stub.len() < raw.len());
         assert!(out.stub.contains(&out.marker));
         assert_eq!(store.resolve(&out.marker).as_deref(), Some(raw.as_str()));
+    }
+
+    #[test]
+    fn a_tampered_on_disk_blob_does_not_resolve() {
+        use std::time::Duration;
+        let dir = std::env::temp_dir().join(format!("sw_offload_integrity_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let raw = big_object();
+
+        let writer = Store::persistent(dir.clone(), Duration::from_secs(3600));
+        let marker = writer.offload(&raw).unwrap().marker;
+        let id = marker_id(&marker).unwrap();
+        let path = dir.join(format!("{id}.blob"));
+
+        // A cold store resolves the uncorrupted blob from disk.
+        let reader = Store::persistent(dir.clone(), Duration::from_secs(3600));
+        assert_eq!(reader.resolve(&marker).as_deref(), Some(raw.as_str()));
+
+        // Tamper the blob (same length, not a size check); a cold store must refuse it.
+        let corrupted: String = raw.chars().rev().collect();
+        assert_eq!(corrupted.len(), raw.len());
+        std::fs::write(&path, &corrupted).unwrap();
+        let cold = Store::persistent(dir.clone(), Duration::from_secs(3600));
+        assert_eq!(
+            cold.resolve(&marker),
+            None,
+            "a tampered blob must not resolve"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
