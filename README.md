@@ -7,6 +7,8 @@
 
 **Lossless. Provable. Composable.**
 
+<img src="docs/hero-stats.png" width="720" alt="up to 95% fewer tokens on tool output · 100% of the information kept · blake3 proof, verified per block">
+
 [![up to 95% fewer tokens](https://img.shields.io/badge/tool%20output-up%20to%2095%25%20fewer%20tokens-3557C4?style=flat-square)](#benchmarks) [![100% of values kept](https://img.shields.io/badge/values%20kept-100%25%2C%20by%20proof-0B8399?style=flat-square)](#how-it-works) [![verified per block](https://img.shields.io/badge/every%20block-blake3%20verified-8A2BE2?style=flat-square)](#how-it-works) [![tests passing](https://img.shields.io/badge/tests-passing-2E7D32?style=flat-square)](#build-and-test) [![Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-6A6F7A?style=flat-square)](#license)
 
 </div>
