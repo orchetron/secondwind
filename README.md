@@ -12,7 +12,7 @@
 </div>
 
 <p align="center">
-  <img src="examples/demo.gif" width="760" alt="secondwind demo: a coding agent on the left, live token savings on the right">
+  <img src="examples/demo.gif" width="900" alt="secondwind demo: a coding agent on the left, live token savings on the right">
 </p>
 
 <p align="center">
