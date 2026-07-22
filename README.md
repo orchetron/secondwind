@@ -7,7 +7,7 @@
 
 **Lossless. Provable. Composable.**
 
-[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](#license) [![Tests](https://img.shields.io/badge/tests-passing-brightgreen.svg)](#build-and-test) [![Fidelity](https://img.shields.io/badge/fidelity-lossless%20by%20proof-8A2BE2.svg)](#how-it-works)
+[![up to 95% fewer tokens](https://img.shields.io/badge/tool%20output-up%20to%2095%25%20fewer%20tokens-3557C4?style=flat-square)](#benchmarks) [![100% of values kept](https://img.shields.io/badge/values%20kept-100%25%2C%20by%20proof-0B8399?style=flat-square)](#how-it-works) [![verified per block](https://img.shields.io/badge/every%20block-blake3%20verified-8A2BE2?style=flat-square)](#how-it-works) [![tests passing](https://img.shields.io/badge/tests-passing-2E7D32?style=flat-square)](#build-and-test) [![Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-6A6F7A?style=flat-square)](#license)
 
 </div>
 
