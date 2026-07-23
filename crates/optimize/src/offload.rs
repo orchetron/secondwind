@@ -362,6 +362,11 @@ fn preview(canonical: &str) -> String {
             canonical.len()
         );
     }
+    // Record arrays: show the short scalar content as a readable table so the agent answers common
+    // lookups inline; long/boilerplate fields and overflow rows stay recoverable through resolve.
+    if let Some(table) = content_table(canonical) {
+        return table;
+    }
     // Index shape, never values, so the model can't answer a value from the preview and must resolve.
     if let Some(index) = json_index(canonical, budget) {
         return format!(
@@ -530,6 +535,135 @@ fn is_signature(line: &str) -> bool {
     LEADS.iter().any(|lead| rest.starts_with(lead))
 }
 
+const MAX_CONTENT_COLS: usize = 16;
+const MAX_CONTENT_CELL: usize = 160;
+
+// A readable content preview of a record array: the short scalar fields as a literal table, capped
+// narrow so the model reads it at face value. Values shown are exact; anything omitted resolves.
+fn content_table(text: &str) -> Option<String> {
+    let Value::Array(items) = serde_json::from_str::<Value>(text).ok()? else {
+        return None;
+    };
+    let objects: Vec<&serde_json::Map<String, Value>> =
+        items.iter().filter_map(Value::as_object).collect();
+    if objects.len() < 2 || objects.len() * 2 < items.len() {
+        return None;
+    }
+
+    let mut order: Vec<String> = Vec::new();
+    let mut pop: HashMap<String, usize> = HashMap::new();
+    let mut maxlen: HashMap<String, usize> = HashMap::new();
+    let mut rows: Vec<HashMap<String, String>> = Vec::with_capacity(objects.len());
+    for obj in &objects {
+        let mut row = HashMap::new();
+        collect_scalars(obj, &mut |k, v| {
+            if is_boilerplate(&k) {
+                return;
+            }
+            if !pop.contains_key(&k) {
+                order.push(k.clone());
+            }
+            *pop.entry(k.clone()).or_insert(0) += 1;
+            let m = maxlen.entry(k.clone()).or_insert(0);
+            *m = (*m).max(v.chars().count());
+            row.insert(k, v);
+        });
+        rows.push(row);
+    }
+    // A column is content or detail: drop whole columns whose values run long (bodies, blobs) so the
+    // table stays short-valued and readable, rather than raggedly dropping a field's long cells.
+    order.retain(|k| maxlen[k] <= MAX_CONTENT_CELL);
+    if order.is_empty() {
+        return None;
+    }
+    // Rank by coverage then distinct values, so identifying content (number, title, login) wins the
+    // narrow column budget over near-constant fields (all-zero counts, all-false flags).
+    let mut distinct: HashMap<&str, std::collections::HashSet<&str>> = HashMap::new();
+    for row in &rows {
+        for (k, v) in row {
+            distinct.entry(k).or_default().insert(v);
+        }
+    }
+    order.sort_by(|a, b| {
+        pop[b]
+            .cmp(&pop[a])
+            .then_with(|| distinct[b.as_str()].len().cmp(&distinct[a.as_str()].len()))
+            .then_with(|| a.cmp(b))
+    });
+    order.truncate(MAX_CONTENT_COLS);
+
+    let budget = (text.len() / 5).max(1024);
+    let mut table = order.join("\t");
+    let mut shown = 0;
+    for row in &rows {
+        let line = order
+            .iter()
+            .map(|c| row.get(c).map(String::as_str).unwrap_or(""))
+            .collect::<Vec<_>>()
+            .join("\t");
+        if table.len() + 1 + line.len() > budget {
+            break;
+        }
+        table.push('\n');
+        table.push_str(&line);
+        shown += 1;
+    }
+    // A short secret could sit in a content cell; drop to the values-omitted index if any detector fires.
+    if !crate::detectorgate::detector_findings(text, &table).is_empty() {
+        return None;
+    }
+
+    let more = objects.len().saturating_sub(shown);
+    let tail = if more > 0 {
+        format!(", {more} more rows")
+    } else {
+        String::new()
+    };
+    Some(format!(
+        "[{} bytes offloaded, content table ({shown} of {} rows{tail}, {} fields), call resolve for omitted fields and full detail]\n{table}",
+        text.len(),
+        objects.len(),
+        order.len(),
+    ))
+}
+
+// Emits (key, value) for each scalar field, descending one level into scalar sub-objects (dotted key).
+fn collect_scalars(obj: &serde_json::Map<String, Value>, out: &mut impl FnMut(String, String)) {
+    for (k, v) in obj {
+        match v {
+            Value::Object(sub) => {
+                for (k2, v2) in sub {
+                    if let Some(s) = render_scalar(v2) {
+                        out(format!("{k}.{k2}"), s);
+                    }
+                }
+            }
+            _ => {
+                if let Some(s) = render_scalar(v) {
+                    out(k.clone(), s);
+                }
+            }
+        }
+    }
+}
+
+fn render_scalar(v: &Value) -> Option<String> {
+    match v {
+        Value::String(s) => Some(s.replace(['\t', '\n'], " ")),
+        Value::Number(n) => Some(n.to_string()),
+        Value::Bool(b) => Some(b.to_string()),
+        _ => None,
+    }
+}
+
+fn is_boilerplate(key: &str) -> bool {
+    const MARKERS: &[&str] = &[
+        "url", "href", "_links", "node_id", "gravatar", "avatar", "sha",
+    ];
+    let k = key.to_ascii_lowercase();
+    MARKERS.iter().any(|m| k.contains(m))
+}
+
 // Index by shape: field names, no values, so a preview is never mistaken for the data. Scalars: None.
 fn json_index(text: &str, budget: usize) -> Option<String> {
     match serde_json::from_str::<Value>(text).ok()? {
@@ -584,6 +718,28 @@ pub fn preview_if_offloaded(raw: &str) -> Option<String> {
     Some(preview(&canonical))
 }
 
+// True only when the offload preview would show real values (a record content table), so the agent
+// can often answer without resolving and the measured REOPEN_PRIOR holds. A shape-only or head
+// preview forces a resolve (reopen prior near 1), so eviction saves nothing and inline should win.
+pub fn covers_content(raw: &str) -> bool {
+    let Ok(value) = serde_json::from_str::<Value>(raw) else {
+        return false;
+    };
+    let canonical = canonicalize(&value);
+    canonical.len() >= MIN_OFFLOAD_BYTES && content_table(&canonical).is_some()
+}
+
+// The content-covering preview, or None. Fuses covers_content and preview_if_offloaded into one
+// parse + canonicalize for the Auto gate, which else pays for both passes on every inline block.
+pub fn covering_preview(raw: &str) -> Option<String> {
+    let value = serde_json::from_str::<Value>(raw).ok()?;
+    let canonical = canonicalize(&value);
+    if canonical.len() < MIN_OFFLOAD_BYTES {
+        return None;
+    }
+    content_table(&canonical)
+}
+
 fn hash(s: &str) -> String {
     blake3::hash(s.as_bytes()).to_hex().to_string()
 }
@@ -597,6 +753,32 @@ mod tests {
             .map(|i| format!(r#""k{i}":"value number {i} for record {i}""#))
             .collect();
         format!("{{{}}}", rows.join(","))
+    }
+
+    fn big_array() -> String {
+        let items: Vec<String> = (0..40)
+            .map(|i| format!(
+                r#"{{"number":{i},"state":"open","title":"fix bug {i}","html_url":"https://github.com/o/r/pull/{i}","user":{{"login":"dev{i}","id":{}}}}}"#,
+                1000 + i
+            ))
+            .collect();
+        format!("[{}]", items.join(","))
+    }
+
+    #[test]
+    fn a_record_array_previews_as_a_readable_content_table() {
+        let store = Store::default();
+        let raw = big_array();
+        let out = store.offload(&raw).unwrap();
+        assert!(out.stub.contains("content table"));
+        // Real content is shown as a literal table so the agent answers common lookups inline.
+        assert!(out.stub.contains("title") && out.stub.contains("fix bug 7"));
+        assert!(out.stub.contains("dev7"));
+        // No fragment/index/hoist codec: every shown value is literal and model-readable.
+        assert!(!out.stub.contains("affix\t") && !out.stub.contains("\ndict\t"));
+        // Boilerplate url columns stay omitted, recoverable through resolve.
+        assert!(!out.stub.contains("html_url"));
+        assert_eq!(store.resolve(&out.marker).as_deref(), Some(raw.as_str()));
     }
 
     #[test]

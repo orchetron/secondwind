@@ -457,14 +457,18 @@ mod tests {
 
     #[test]
     fn compress_then_verify_roundtrips_over_the_contract() {
-        let raw: String = (0..40)
-            .map(|i| format!("-rw-r--r-- 1 root wheel {:>6} file-{i}.txt", 100 + i * 37))
-            .collect::<Vec<_>>()
-            .join("\n");
+        let raw: String = format!(
+            "[{}]",
+            (0..40)
+                .map(|i| format!(r#"{{"id":{i},"path":"file-{i}.txt","state":"open"}}"#))
+                .collect::<Vec<_>>()
+                .join(",")
+        );
         let request = json!({ "block": raw }).to_string();
         let out: Value = serde_json::from_str(&compress_json(Some(request.as_bytes()))).unwrap();
+        // The contract under test is compress-then-verify; whichever inline codec wins must produce a
+        // wire that independently verifies against its portable certificate.
         assert_eq!(out["kind"], "compressed");
-        assert_eq!(out["transform"], "columns");
 
         let verify_req =
             json!({ "wire": out["wire"], "hash": out["certificate"]["hash"] }).to_string();
@@ -486,10 +490,13 @@ mod tests {
             proposers: true,
             codec: None,
         }));
-        let ls: String = (0..40)
-            .map(|i| format!("-rw-r--r-- 1 root wheel {:>6} file-{i}.txt", 100 + i * 37))
-            .collect::<Vec<_>>()
-            .join("\n");
+        let ls: String = format!(
+            "[{}]",
+            (0..40)
+                .map(|i| format!(r#"{{"id":{i},"path":"file-{i}.txt","state":"open"}}"#))
+                .collect::<Vec<_>>()
+                .join(",")
+        );
         let request = json!({
             "model": "gpt-4o",
             "messages": [
@@ -502,7 +509,7 @@ mod tests {
         let out: Value =
             serde_json::from_str(&rewrite_request(session, Some(request.as_bytes()))).unwrap();
         assert_eq!(out["stats"]["blocks_rewritten"], 1);
-        assert_eq!(out["stats"]["transforms"][0], "columns");
+        assert_eq!(out["stats"]["transforms"][0], "columnar");
         let tool = out["request"]["messages"][1]["content"].as_str().unwrap();
         assert!(tool.len() < ls.len(), "the tool output must shrink");
         assert_eq!(
@@ -526,7 +533,13 @@ mod tests {
             codec: None,
         }));
         let ls: String = (0..40)
-            .map(|i| format!("-rw-r--r-- 1 root wheel {:>6} file-{i}.txt", 100 + i * 37))
+            .map(|i| {
+                format!(
+                    "{:>8} -rw-r--r-- 1 root wheel {:>6} file-{i}.txt",
+                    13000 + i * 137,
+                    100 + i * 37
+                )
+            })
             .collect::<Vec<_>>()
             .join("\n");
         let request = json!({

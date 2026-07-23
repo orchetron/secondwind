@@ -7,31 +7,44 @@ pub mod atom;
 pub mod cachecost;
 pub mod certificate;
 pub mod clmh;
+mod column;
 pub mod columnar;
 pub mod counterfactual;
 pub mod dedup;
 pub mod detectorgate;
 pub mod dict;
 pub mod distilled;
+pub mod doc;
 pub mod frontier;
+pub mod frontlines;
+pub mod grouped;
+pub mod kv;
 pub mod lines;
+pub mod lock;
 pub mod log;
+pub mod nested;
 pub mod netcost;
+pub mod norm;
 pub mod offload;
 pub mod outline;
 pub mod prefix;
 pub mod prose;
 pub mod proxy;
 pub mod reconcile;
+pub mod recordcol;
 pub mod relevance;
 pub mod replay;
 pub mod resolve;
 pub mod richness;
 pub mod search;
 pub mod shape;
+pub mod shred;
 pub mod text_columnar;
 pub mod tokens;
 pub mod transform;
+pub mod tree;
+#[cfg(feature = "treesitter")]
+pub mod treesit;
 
 pub use atom::canonicalize;
 
@@ -47,7 +60,10 @@ use std::sync::Arc;
 
 use admit::{Certificate, Refusal, admit};
 use columnar::Columnar;
+use doc::Doc;
+use nested::Nested;
 use netcost::{NetCostGate, Verdict, Zone};
+use norm::Normalize;
 use offload::{OffloadStore, Store};
 use tokens::{ByteCounter, TokenCounter};
 use transform::{Encoded, TextProposer, Transform};
@@ -97,6 +113,17 @@ impl KeptReason {
     }
 }
 
+// Host control over recoverable eviction. Auto is the cost model: offload only when a content-covering
+// preview makes it genuinely cheaper. Off never evicts (no resolver, or the block must stay in-window).
+// Always evicts every offloadable block regardless of cost, for agents that will resolve on demand.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum OffloadMode {
+    Off,
+    #[default]
+    Auto,
+    Always,
+}
+
 // Expected fraction of an offloaded block the agent pulls back via resolve; inline wins when its
 // factored size beats stub + REOPEN_PRIOR * body. Measured 0.45 over 1055 real traces (2229 offloads).
 const REOPEN_PRIOR: f64 = 0.45;
@@ -120,7 +147,7 @@ pub struct Optimizer {
     embedder: Arc<dyn relevance::Embedder>,
     prose_mode: bool,
     prose_shrinker: Option<Arc<dyn prose::ProseShrinker>>,
-    offload_allowed: bool,
+    offload_mode: OffloadMode,
 }
 
 impl Default for Optimizer {
@@ -132,8 +159,15 @@ impl Default for Optimizer {
 impl Optimizer {
     pub fn new(gate: NetCostGate, zone: Zone) -> Self {
         Self {
-            transforms: vec![Box::new(Columnar::default())],
-            text_proposers: vec![Box::new(dict::Dict), Box::new(lines::Lines)],
+            transforms: vec![
+                Box::new(Columnar::default()),
+                Box::new(Normalize),
+                Box::new(Nested),
+                Box::new(Doc),
+            ],
+            // Built-in text codecs are unreadable inline; only host-registered proposers ship here,
+            // and a host owns its codec's readability. See compress_text.
+            text_proposers: Vec::new(),
             proposers_enabled: true,
             gate,
             zone,
@@ -142,14 +176,33 @@ impl Optimizer {
             embedder: Arc::new(distilled::DistilledEmbedder),
             prose_mode: false,
             prose_shrinker: None,
-            offload_allowed: true,
+            offload_mode: OffloadMode::Auto,
         }
     }
 
-    // False when the request carries no resolver: prefer inline lossless codecs over an offload that
-    // could never be surfaced, so a resolver-less agent still gets same-turn compression.
+    // Pick how recoverable eviction competes with inline: Off, Auto (cost model), or Always.
+    pub fn set_offload_mode(&mut self, mode: OffloadMode) {
+        self.offload_mode = mode;
+    }
+
+    pub fn offload_mode(&self) -> OffloadMode {
+        self.offload_mode
+    }
+
+    // Off means no recoverable eviction on any path, so every direct-offload strategy (repeat dedup,
+    // relevance split, prose split) checks this before touching the store.
+    fn eviction_off(&self) -> bool {
+        matches!(self.offload_mode, OffloadMode::Off)
+    }
+
+    // Compat shim: false means no resolver is present, so never offload (Off); true restores the
+    // Auto cost model. A host wanting forced eviction calls set_offload_mode(Always) directly.
     pub fn set_offload_allowed(&mut self, allowed: bool) {
-        self.offload_allowed = allowed;
+        self.offload_mode = if allowed {
+            OffloadMode::Auto
+        } else {
+            OffloadMode::Off
+        };
     }
 
     // Swap the baked-in relevance embedder for a stronger backend.
@@ -191,7 +244,7 @@ impl Optimizer {
     // Switch the pipeline from the default byte proxy to a real token counter, so codec selection
     // and every gate decision optimize token cost.
     pub fn with_counter(mut self, counter: Arc<dyn TokenCounter>) -> Self {
-        // Index 0 is always the built-in columnar; rebuild only it so a with_transform addition survives.
+        // Index 0 is the built-in readable table codec; rebuild only it so a with_transform addition survives.
         self.transforms[0] = Box::new(Columnar::with_counter(counter.clone()));
         self.counter = counter;
         self
@@ -276,6 +329,9 @@ impl Optimizer {
     // A byte-identical repeat carries no new atom: collapse it to a content-hashed marker instead of
     // a second full preview. None when too small or it does not price out (caller compresses on merits).
     pub fn offload_repeat(&mut self, raw: &str) -> Option<Outcome> {
+        if self.eviction_off() {
+            return None;
+        }
         let offloaded = self.store.offload(raw).ok()?;
         if !self.store.covers(&offloaded.marker, raw) {
             return None;
@@ -295,6 +351,9 @@ impl Optimizer {
     }
 
     fn try_relevance_split(&mut self, raw: &str, query: &str) -> Option<Outcome> {
+        if self.eviction_off() {
+            return None;
+        }
         let value = serde_json::from_str::<Value>(raw).ok()?;
         let items = value.as_array()?;
         if items.len() < RELEVANCE_MIN_ROWS {
@@ -383,13 +442,11 @@ impl Optimizer {
             };
             // Price the counterfactual against raw (what the model would be billed), not canonical,
             // so the figure matches the raw-to-wire reduction the dashboard shows.
-            let usd = match self.priced(raw, &encoded.wire) {
-                Verdict::Save { usd } => usd,
-                Verdict::Refuse(reason) => {
-                    return Outcome::KeptVerbatim {
-                        reason: KeptReason::NoNetSaving(reason),
-                    };
-                }
+            // A codec that encodes but does not shrink (map-heavy JSON: npm/PyPI registry responses,
+            // where the bulk is object maps, not arrays) must not short-circuit to verbatim: skip it
+            // so the block still reaches offload, which can evict a large incompressible body.
+            let Verdict::Save { usd } = self.priced(raw, &encoded.wire) else {
+                continue;
             };
 
             if !detectorgate::detector_findings(&atom::canonicalize(&value), &encoded.wire)
@@ -400,139 +457,97 @@ impl Optimizer {
                 };
             }
 
-            return Outcome::Compressed {
-                wire: encoded.wire,
-                transform: transform.id(),
+            return self.ship_inline_or_offload(
+                raw,
+                encoded.wire,
+                transform.id(),
                 certificate,
-                saved_usd: usd,
-            };
+                usd,
+            );
         }
 
         self.try_offload(raw)
     }
 
-    fn try_search(&mut self, raw: &str) -> Outcome {
-        let Some(factored) = search::try_factor(raw) else {
-            return self.try_text_columnar(raw);
-        };
-        if let Some(preview) = offload::preview_if_offloaded(raw) {
-            let marker = format!("<<swload:{}>>", "0".repeat(16));
-            let stub = format!("{preview}\n{marker}");
-            let offload_expected = self.units(&stub) as f64 + REOPEN_PRIOR * self.units(raw) as f64;
-            if offload_expected < self.units(&factored.wire) as f64 {
-                return self.try_offload(raw);
-            }
-        }
-        let Verdict::Save { usd } = self.priced(raw, &factored.wire) else {
-            return self.try_text_columnar(raw);
-        };
-        if !detectorgate::detector_findings(raw, &factored.wire).is_empty() {
-            return self.try_text_columnar(raw);
-        }
-        let wire_bytes = factored.wire.len();
-        Outcome::Compressed {
-            wire: factored.wire,
-            transform: "search",
-            certificate: Certificate {
-                clmh_before: clmh::Clmh::default(),
-                clmh_after: clmh::Clmh::default(),
-                canonical_bytes: raw.len(),
-                wire_bytes,
-            },
-            saved_usd: usd,
-        }
-    }
-
-    // Lossless columnar reformat of aligned tabular output (ls, ps, df, docker/kubectl), read inline
-    // with no round-trip. Defers to offload when a recoverable offload beats keeping the columns inline.
-    fn try_text_columnar(&mut self, raw: &str) -> Outcome {
-        let encoded = {
-            let cost = |s: &str| self.units(s);
-            text_columnar::try_encode(raw, &cost)
-        };
-        let Some(encoded) = encoded else {
-            return self.try_log(raw);
-        };
-        if self.offload_allowed
-            && let Some(preview) = offload::preview_if_offloaded(raw)
-        {
-            let marker = format!("<<swload:{}>>", "0".repeat(16));
-            let stub = format!("{preview}\n{marker}");
-            let offload_expected = self.units(&stub) as f64 + REOPEN_PRIOR * self.units(raw) as f64;
-            if offload_expected < self.units(&encoded.wire) as f64 {
-                return self.try_offload(raw);
-            }
-        }
-        let Verdict::Save { usd } = self.priced(raw, &encoded.wire) else {
-            return self.try_log(raw);
-        };
-        if !detectorgate::detector_findings(raw, &encoded.wire).is_empty() {
-            return self.try_log(raw);
-        }
-        let wire_bytes = encoded.wire.len();
-        Outcome::Compressed {
-            wire: encoded.wire,
-            transform: "columns",
-            certificate: Certificate {
-                clmh_before: clmh::Clmh::default(),
-                clmh_after: clmh::Clmh::default(),
-                canonical_bytes: raw.len(),
-                wire_bytes,
-            },
-            saved_usd: usd,
-        }
-    }
-
-    fn try_log(&mut self, raw: &str) -> Outcome {
-        let Some(templated) = log::try_template(raw) else {
-            return self.try_proposers(raw);
-        };
-        let Verdict::Save { usd } = self.priced(raw, &templated.wire) else {
-            return self.try_proposers(raw);
-        };
-        if !detectorgate::detector_findings(raw, &templated.wire).is_empty() {
-            return self.try_proposers(raw);
-        }
-        let wire_bytes = templated.wire.len();
-        Outcome::Compressed {
-            wire: templated.wire,
-            transform: "log",
-            certificate: Certificate {
-                clmh_before: clmh::Clmh::default(),
-                clmh_after: clmh::Clmh::default(),
-                canonical_bytes: raw.len(),
-                wire_bytes,
-            },
-            saved_usd: usd,
-        }
-    }
-
-    // Text branch: run the built-in cascade, then let proposers compete with its inline wire, making
-    // the search best-of-N across ALL codecs. The offload comparison the built-ins ran still holds.
+    // Readable inline text codecs ship first: grouped (grep by file, listings by directory) and tree
+    // (box-drawing dep trees as indentation). Both read at face value. Everything else has no readable
+    // inline codec: a host proposer may ship (it owns its readability), else evict/verbatim.
     fn compress_text(&mut self, raw: &str) -> Outcome {
-        let cascade = self.try_search(raw);
-        if let Outcome::Compressed { wire: ref cw, .. } = cascade {
-            let cascade_units = self.units(cw);
-            if let Some((wire, id, usd, units)) = self.best_proposer(raw)
-                && units < cascade_units
+        for (id, wire) in [
+            ("grouped", grouped::encode(raw)),
+            ("tree", tree::encode(raw)),
+            ("lock", lock::encode(raw)),
+        ] {
+            if let Some(wire) = wire
+                && let Some(outcome) = self.try_text_codec(raw, id, wire)
             {
-                // The built-in already beat offload to win the cascade, so a smaller proposer beats it
-                // too: ship it without re-checking offload.
-                let wire_bytes = wire.len();
-                return Outcome::Compressed {
-                    wire,
-                    transform: id,
-                    certificate: Certificate {
-                        clmh_before: clmh::Clmh::default(),
-                        clmh_after: clmh::Clmh::default(),
-                        canonical_bytes: raw.len(),
-                        wire_bytes,
-                    },
-                    saved_usd: usd,
-                };
+                return outcome;
             }
         }
-        cascade
+        self.try_proposers(raw)
+    }
+
+    fn try_text_codec(&mut self, raw: &str, id: &'static str, wire: String) -> Option<Outcome> {
+        let Verdict::Save { usd } = self.priced(raw, &wire) else {
+            return None;
+        };
+        if !detectorgate::detector_findings(raw, &wire).is_empty() {
+            return None;
+        }
+        let certificate = Certificate {
+            clmh_before: clmh::Clmh::default(),
+            clmh_after: clmh::Clmh::default(),
+            canonical_bytes: raw.len(),
+            wire_bytes: wire.len(),
+        };
+        Some(self.ship_inline_or_offload(raw, wire, id, certificate, usd))
+    }
+
+    // Whether recoverable eviction should be taken for this block, per the host's mode. Auto defers to
+    // the cost model; Always forces it; Off refuses. wire_units is the inline candidate the offload
+    // must beat under Auto.
+    fn wants_offload(&self, raw: &str, wire_units: usize) -> bool {
+        match self.offload_mode {
+            OffloadMode::Off => false,
+            OffloadMode::Always => true,
+            OffloadMode::Auto => self.auto_offload_wins(raw, wire_units),
+        }
+    }
+
+    // Auto rule: offload only when its preview covers the content (so REOPEN_PRIOR holds) and its
+    // expected cost (stub + REOPEN_PRIOR * raw) beats the inline wire. A shape-only or head preview
+    // forces a resolve, so eviction saves nothing and the inline wire wins.
+    fn auto_offload_wins(&self, raw: &str, wire_units: usize) -> bool {
+        let Some(preview) = offload::covering_preview(raw) else {
+            return false;
+        };
+        let marker = format!("<<swload:{}>>", "0".repeat(16));
+        let stub = format!("{preview}\n{marker}");
+        let offload_expected = self.units(&stub) as f64 + REOPEN_PRIOR * self.units(raw) as f64;
+        offload_expected < wire_units as f64
+    }
+
+    // Ship the inline wire unless the mode elects eviction and the block can actually be offloaded;
+    // a block below the offload floor keeps its inline wire rather than falling to verbatim.
+    fn ship_inline_or_offload(
+        &mut self,
+        raw: &str,
+        wire: String,
+        id: &'static str,
+        certificate: Certificate,
+        usd: f64,
+    ) -> Outcome {
+        if self.wants_offload(raw, self.units(&wire))
+            && let out @ Outcome::Offloaded { .. } = self.try_offload(raw)
+        {
+            return out;
+        }
+        Outcome::Compressed {
+            wire,
+            transform: id,
+            certificate,
+            saved_usd: usd,
+        }
     }
 
     // Best-of-N over the text proposers, keeping only candidates whose own decode reproduces the block
@@ -575,16 +590,10 @@ impl Optimizer {
     // recoverable offload is cheaper.
     fn try_proposers(&mut self, raw: &str) -> Outcome {
         if let Some((wire, id, usd, units)) = self.best_proposer(raw) {
-            if self.offload_allowed
-                && let Some(preview) = offload::preview_if_offloaded(raw)
+            if self.wants_offload(raw, units)
+                && let out @ Outcome::Offloaded { .. } = self.try_offload(raw)
             {
-                let marker = format!("<<swload:{}>>", "0".repeat(16));
-                let stub = format!("{preview}\n{marker}");
-                let offload_expected =
-                    self.units(&stub) as f64 + REOPEN_PRIOR * self.units(raw) as f64;
-                if offload_expected < units as f64 {
-                    return self.try_offload(raw);
-                }
+                return out;
             }
             let wire_bytes = wire.len();
             return Outcome::Compressed {
@@ -623,6 +632,9 @@ impl Optimizer {
     }
 
     fn offload_behind(&mut self, raw: &str, inline: String) -> Option<Outcome> {
+        if self.eviction_off() {
+            return None;
+        }
         let offloaded = self.store.offload(raw).ok()?;
         if !self.store.covers(&offloaded.marker, raw) {
             return None;
@@ -639,7 +651,7 @@ impl Optimizer {
     }
 
     fn try_offload(&mut self, raw: &str) -> Outcome {
-        if !self.offload_allowed {
+        if self.eviction_off() {
             return Outcome::KeptVerbatim {
                 reason: KeptReason::NotApplicable,
             };
@@ -967,34 +979,26 @@ mod tests {
     }
 
     #[test]
-    fn tabular_output_routes_to_the_columns_transform_and_reconstructs() {
-        // Sized above the columnar floor but below the offload floor, so it takes the inline columns path.
+    fn small_tabular_text_stays_verbatim_and_readable() {
+        // Tabular text has no model-readable inline codec; below the offload floor it stays verbatim
+        // (readable) rather than reshaping into a wire the model cannot read.
         let mut raw = String::new();
         for i in 0..10 {
             raw.push_str(&format!(
-                "-rw-r--r-- 1 root wheel {:>5} f-{i}\n",
+                "{:>7} -rw-r--r-- 1 root wheel {:>5} f-{i}\n",
+                13000 + i * 137,
                 100 + i * 37
             ));
         }
         let raw = raw.trim_end();
-        assert!(
-            raw.len() >= 256 && raw.len() < 512,
-            "sized into the columns band: {}",
-            raw.len()
-        );
+        assert!(raw.len() < 512, "below the offload floor: {}", raw.len());
 
-        let mut opt = Optimizer::default();
-        let Outcome::Compressed {
-            wire, transform, ..
-        } = opt.compress_block(raw)
-        else {
-            panic!("aligned tabular output should take the columns path");
-        };
-        assert_eq!(transform, "columns");
-        assert_eq!(
-            text_columnar::decode(&wire).as_deref(),
-            Some(raw),
-            "byte-exact reconstruction"
+        assert!(
+            matches!(
+                Optimizer::default().compress_block(raw),
+                Outcome::KeptVerbatim { .. }
+            ),
+            "small tabular text stays whole and readable"
         );
     }
 
@@ -1046,9 +1050,9 @@ mod tests {
     }
 
     #[test]
-    fn without_a_resolver_tabular_fires_columns_inline() {
-        // The Codex-today path: a large aligned block with no resolver present compresses inline
-        // via columns (a same-turn lossless win) instead of being kept whole.
+    fn without_a_resolver_tabular_text_stays_verbatim_readable() {
+        // Tabular text has no model-readable inline codec, so with no resolver to offload behind it
+        // stays whole and readable rather than reshaping into a wire the model cannot read.
         let mut raw = String::new();
         for i in 0..80 {
             raw.push_str(&format!(
@@ -1057,21 +1061,20 @@ mod tests {
             ));
         }
         let raw = raw.trim_end();
-        assert!(raw.len() > 512, "large enough to offload: {}", raw.len());
+        assert!(
+            raw.len() > 512,
+            "large enough to offload with a resolver: {}",
+            raw.len()
+        );
 
         let mut no_resolver = Optimizer::default();
         no_resolver.set_offload_allowed(false);
-        let Outcome::Compressed {
-            wire, transform, ..
-        } = no_resolver.compress_block(raw)
-        else {
-            panic!("without a resolver the block should compress inline via columns");
-        };
-        assert_eq!(transform, "columns");
-        assert_eq!(
-            text_columnar::decode(&wire).as_deref(),
-            Some(raw),
-            "byte-exact"
+        assert!(
+            matches!(
+                no_resolver.compress_block(raw),
+                Outcome::KeptVerbatim { .. }
+            ),
+            "without a resolver tabular text is kept whole and readable"
         );
     }
 

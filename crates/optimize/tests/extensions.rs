@@ -45,7 +45,10 @@ fn kv_block() -> String {
 
 #[test]
 fn a_custom_transform_is_applied() {
+    // Offload disabled to isolate the composability path: the weak KvPack fixture barely shrinks, so
+    // with a resolver the cost model would (correctly) evict instead; here we test it ships inline.
     let mut optimizer = Optimizer::default().with_transform(Box::new(KvPack));
+    optimizer.set_offload_allowed(false);
     match optimizer.compress_block(&kv_block()) {
         Outcome::Compressed {
             transform, wire, ..
@@ -67,6 +70,7 @@ fn with_counter_does_not_drop_a_custom_transform() {
         .with_counter(Arc::new(ByteCounter))
         .with_transform(Box::new(KvPack));
     for mut optimizer in [before, after] {
+        optimizer.set_offload_allowed(false);
         match optimizer.compress_block(&kv_block()) {
             Outcome::Compressed { transform, .. } => assert_eq!(transform, "kv-pack"),
             _ => panic!("custom transform lost after with_counter"),

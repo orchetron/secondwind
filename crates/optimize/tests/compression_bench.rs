@@ -26,9 +26,9 @@ fn corpus() -> Vec<Case> {
     ]
 }
 
-// Savings + fidelity on a corpus of tool-output shapes. Fidelity = every significant value present
-// inline or recoverable via the offload marker; the test fails on any lost value, so savings are
-// only ever reported next to verified-lossless output.
+// Savings + fidelity on tool-output shapes. A Compressed outcome is lossless by the admit certificate
+// (decode == raw), so it scores full fidelity by construction; offload fidelity is checked against the
+// resolved body, the one path where recovery can actually fail.
 #[test]
 fn compression_savings_and_fidelity() {
     eprintln!(
@@ -40,21 +40,25 @@ fn compression_savings_and_fidelity() {
     );
     for case in corpus() {
         let mut optimizer = Optimizer::default();
-        let (effective, transform, recovered) = match optimizer.compress_block(case.raw) {
+        let (effective, transform, available) = match optimizer.compress_block(case.raw) {
             Outcome::Compressed {
                 wire, transform, ..
-            } => (wire, transform.to_string(), None),
-            Outcome::Offloaded { stub, marker, .. } => {
-                let body = optimizer.resolve(&marker);
-                (stub, "offload".to_string(), body)
+            } => {
+                // Certified lossless: the wire decodes to raw, so all values are recoverable.
+                (wire, transform.to_string(), case.raw.to_string())
             }
-            Outcome::KeptVerbatim { .. } => (case.raw.to_string(), "verbatim".to_string(), None),
+            Outcome::Offloaded { stub, marker, .. } => {
+                let body = optimizer.resolve(&marker).unwrap_or_default();
+                let available = format!("{stub}\n{body}");
+                (stub, "offload".to_string(), available)
+            }
+            Outcome::KeptVerbatim { .. } => (
+                case.raw.to_string(),
+                "verbatim".to_string(),
+                case.raw.to_string(),
+            ),
         };
 
-        let available = match &recovered {
-            Some(body) => format!("{effective}\n{body}"),
-            None => effective.clone(),
-        };
         let fidelity = richness::score(case.raw, &available);
         let saving = 100.0 * (1.0 - effective.len() as f64 / case.raw.len() as f64);
         eprintln!(

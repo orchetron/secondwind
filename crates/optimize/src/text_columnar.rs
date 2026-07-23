@@ -16,6 +16,7 @@ pub struct Encoded {
 
 // Encodes when tabular and strictly token-cheaper per `cost`; self-verifies byte-exact and abstains
 // (None) on any mismatch. `cost` returns a string's token count (pass |s| s.len() for a byte proxy).
+// Races a fixed-column encoding against tail encodings (free-text last column) and keeps the cheapest.
 pub fn try_encode(raw: &str, cost: &dyn Fn(&str) -> usize) -> Option<Encoded> {
     if raw.len() < MIN_BYTES {
         return None;
@@ -23,17 +24,50 @@ pub fn try_encode(raw: &str, cost: &dyn Fn(&str) -> usize) -> Option<Encoded> {
     let lines: Vec<&str> = raw.split('\n').collect();
     let parsed: Vec<(Vec<String>, Vec<String>)> = lines.iter().map(|l| tokenize(l)).collect();
 
-    let n = dominant_token_count(&parsed)?;
+    let mut best: Option<Encoded> = None;
+    if let Some(n) = dominant_token_count(&parsed) {
+        consider(&mut best, encode_fixed(&lines, &parsed, n, cost), raw, cost);
+    }
+    for f in tail_column_counts(&parsed) {
+        consider(&mut best, encode_tail(&lines, &parsed, f, cost), raw, cost);
+    }
+    best
+}
+
+fn consider(
+    best: &mut Option<Encoded>,
+    candidate: Option<Encoded>,
+    raw: &str,
+    cost: &dyn Fn(&str) -> usize,
+) {
+    let Some(candidate) = candidate else {
+        return;
+    };
+    if cost(&candidate.wire) >= cost(raw) || candidate.decoded != raw {
+        return;
+    }
+    if best
+        .as_ref()
+        .is_none_or(|b| cost(&candidate.wire) < cost(&b.wire))
+    {
+        *best = Some(candidate);
+    }
+}
+
+fn encode_fixed(
+    lines: &[&str],
+    parsed: &[(Vec<String>, Vec<String>)],
+    n: usize,
+    cost: &dyn Fn(&str) -> usize,
+) -> Option<Encoded> {
     if n < MIN_COLS {
         return None;
     }
-    let rows: Vec<usize> = (0..lines.len())
-        .filter(|&i| parsed[i].1.len() == n)
-        .collect();
+    let is_table: Vec<bool> = parsed.iter().map(|(_, t)| t.len() == n).collect();
+    let rows: Vec<usize> = (0..lines.len()).filter(|&i| is_table[i]).collect();
     if rows.len() < MIN_ROWS {
         return None;
     }
-
     let token_cols: Vec<Vec<&str>> = (0..n)
         .map(|c| rows.iter().map(|&r| parsed[r].1[c].as_str()).collect())
         .collect();
@@ -42,40 +76,120 @@ pub fn try_encode(raw: &str, cost: &dyn Fn(&str) -> usize) -> Option<Encoded> {
         .collect();
 
     let mut wire = format!("{HEADER}\t{}\t{}\t{}\n", lines.len(), n, rows.len());
-    wire.push_str(&run_length_line_map(&parsed, n));
+    emit_body(
+        &mut wire,
+        lines,
+        &is_table,
+        &token_cols,
+        &gap_cols,
+        None,
+        cost,
+    );
+    let decoded = decode(&wire)?;
+    Some(Encoded { wire, decoded })
+}
+
+// Fixed leading columns plus a free-text tail: any line with at least `f` tokens is a row whose last
+// column is the exact remainder of the line after token f-1, so a ragged table (ps, docker) transposes.
+fn encode_tail(
+    lines: &[&str],
+    parsed: &[(Vec<String>, Vec<String>)],
+    f: usize,
+    cost: &dyn Fn(&str) -> usize,
+) -> Option<Encoded> {
+    if f < MIN_COLS {
+        return None;
+    }
+    let is_table: Vec<bool> = parsed.iter().map(|(_, t)| t.len() >= f).collect();
+    let rows: Vec<usize> = (0..lines.len()).filter(|&i| is_table[i]).collect();
+    if rows.len() < MIN_ROWS {
+        return None;
+    }
+    let token_cols: Vec<Vec<&str>> = (0..f)
+        .map(|c| rows.iter().map(|&r| parsed[r].1[c].as_str()).collect())
+        .collect();
+    let gap_cols: Vec<Vec<&str>> = (0..f)
+        .map(|c| rows.iter().map(|&r| parsed[r].0[c].as_str()).collect())
+        .collect();
+    let tail: Vec<&str> = rows
+        .iter()
+        .map(|&r| {
+            let (gaps, tokens) = &parsed[r];
+            let prefix: usize = (0..f).map(|c| gaps[c].len() + tokens[c].len()).sum();
+            &lines[r][prefix..]
+        })
+        .collect();
+
+    let mut wire = format!("{HEADER}\t{}\t{}\t{}\t1\n", lines.len(), f, rows.len());
+    emit_body(
+        &mut wire,
+        lines,
+        &is_table,
+        &token_cols,
+        &gap_cols,
+        Some(&tail),
+        cost,
+    );
+    let decoded = decode(&wire)?;
+    Some(Encoded { wire, decoded })
+}
+
+fn emit_body(
+    wire: &mut String,
+    lines: &[&str],
+    is_table: &[bool],
+    token_cols: &[Vec<&str>],
+    gap_cols: &[Vec<&str>],
+    tail: Option<&Vec<&str>>,
+    cost: &dyn Fn(&str) -> usize,
+) {
+    wire.push_str(&run_length_line_map(is_table));
     wire.push('\n');
-    for i in 0..lines.len() {
-        if parsed[i].1.len() != n {
-            wire.push_str(lines[i]);
+    for (i, line) in lines.iter().enumerate() {
+        if !is_table[i] {
+            wire.push_str(line);
             wire.push('\n');
         }
     }
-    for col in &token_cols {
+    for col in token_cols {
         wire.push_str(&cheapest(generic_candidates(col), cost));
     }
-    for c in 0..=n {
-        let mut candidates = generic_candidates(&gap_cols[c]);
-        if c < n
-            && let Some(rule) = align_candidate(&gap_cols[c], &token_cols[c], '<')
+    for (c, gap) in gap_cols.iter().enumerate() {
+        let mut candidates = generic_candidates(gap);
+        if c < token_cols.len()
+            && let Some(rule) = align_candidate(gap, &token_cols[c], '<')
         {
             candidates.push(rule);
         }
         if c >= 1
-            && let Some(rule) = align_candidate(&gap_cols[c], &token_cols[c - 1], '>')
+            && let Some(rule) = align_candidate(gap, &token_cols[c - 1], '>')
         {
             candidates.push(rule);
         }
         wire.push_str(&cheapest(candidates, cost));
     }
+    if let Some(tail) = tail {
+        wire.push_str(&cheapest(generic_candidates(tail), cost));
+    }
+}
 
-    if cost(&wire) >= cost(raw) {
-        return None;
-    }
-    let decoded = decode(&wire)?;
-    if decoded != raw {
-        return None;
-    }
-    Some(Encoded { wire, decoded })
+// Fixed-column counts to try for a tail split: the shared floor (min tokens) and the dominant count,
+// each also one lower so a column that is always present but sometimes free-text moves into the tail.
+fn tail_column_counts(parsed: &[(Vec<String>, Vec<String>)]) -> Vec<usize> {
+    let counts: Vec<usize> = parsed
+        .iter()
+        .map(|(_, t)| t.len())
+        .filter(|&c| c >= MIN_COLS)
+        .collect();
+    let Some(&min) = counts.iter().min() else {
+        return Vec::new();
+    };
+    let dom = dominant_token_count(parsed).unwrap_or(min);
+    let mut cands = vec![min, min.saturating_sub(1), dom, dom.saturating_sub(1)];
+    cands.retain(|&f| f >= MIN_COLS);
+    cands.sort_unstable();
+    cands.dedup();
+    cands
 }
 
 // Splits a line into gaps (whitespace runs) and tokens; invariant gaps.len() == tokens.len()+1 and
@@ -120,16 +234,16 @@ fn dominant_token_count(parsed: &[(Vec<String>, Vec<String>)]) -> Option<usize> 
 }
 
 // Alternating T (table row) / E (exception) runs as <type><count> pairs, e.g. "E1T923".
-fn run_length_line_map(parsed: &[(Vec<String>, Vec<String>)], n: usize) -> String {
+fn run_length_line_map(is_table: &[bool]) -> String {
     let mut out = String::new();
     let mut i = 0;
-    while i < parsed.len() {
-        let is_table = parsed[i].1.len() == n;
+    while i < is_table.len() {
+        let table = is_table[i];
         let mut j = i;
-        while j < parsed.len() && (parsed[j].1.len() == n) == is_table {
+        while j < is_table.len() && is_table[j] == table {
             j += 1;
         }
-        out.push(if is_table { 'T' } else { 'E' });
+        out.push(if table { 'T' } else { 'E' });
         out.push_str(&(j - i).to_string());
         i = j;
     }
@@ -155,7 +269,7 @@ fn parse_line_map(s: &str, total: usize) -> Option<Vec<bool>> {
     (out.len() == total).then_some(out)
 }
 
-fn cheapest(candidates: Vec<String>, cost: &dyn Fn(&str) -> usize) -> String {
+pub(crate) fn cheapest(candidates: Vec<String>, cost: &dyn Fn(&str) -> usize) -> String {
     candidates
         .into_iter()
         .min_by_key(|c| cost(c))
@@ -164,7 +278,7 @@ fn cheapest(candidates: Vec<String>, cost: &dyn Fn(&str) -> usize) -> String {
 
 // Per-column value codecs: `C` const, `D` dictionary (uniques + indices), `F` front coding (shared
 // prefix len + suffix, crushes sorted columns), `R` raw. Values are newline-free, so all parse positionally.
-fn generic_candidates(values: &[&str]) -> Vec<String> {
+pub(crate) fn generic_candidates(values: &[&str]) -> Vec<String> {
     let mut candidates: Vec<String> = Vec::with_capacity(4);
 
     if values.iter().all(|v| Some(v) == values.first()) {
@@ -244,11 +358,11 @@ fn align_candidate(gaps: &[&str], neighbour: &[&str], dir: char) -> Option<Strin
     width.map(|w| format!("P\t{dir}\t{w}\n"))
 }
 
-fn shared_prefix_chars(a: &str, b: &str) -> usize {
+pub(crate) fn shared_prefix_chars(a: &str, b: &str) -> usize {
     a.chars().zip(b.chars()).take_while(|(x, y)| x == y).count()
 }
 
-fn byte_offset(s: &str, chars: usize) -> usize {
+pub(crate) fn byte_offset(s: &str, chars: usize) -> usize {
     s.char_indices()
         .nth(chars)
         .map(|(i, _)| i)
@@ -265,6 +379,7 @@ pub fn decode(wire: &str) -> Option<String> {
     let total: usize = parts.next()?.parse().ok()?;
     let n: usize = parts.next()?.parse().ok()?;
     let n_rows: usize = parts.next()?.parse().ok()?;
+    let tail_mode = parts.next() == Some("1");
 
     let types = parse_line_map(lines.next()?, total)?;
 
@@ -279,8 +394,9 @@ pub fn decode(wire: &str) -> Option<String> {
         let tag = lines.next()?;
         token_cols.push(decode_value_column(tag, &mut lines, n_rows)?);
     }
-    let mut gap_cols: Vec<Vec<String>> = Vec::with_capacity(n + 1);
-    for c in 0..=n {
+    let n_gaps = if tail_mode { n } else { n + 1 };
+    let mut gap_cols: Vec<Vec<String>> = Vec::with_capacity(n_gaps);
+    for c in 0..n_gaps {
         let tag = lines.next()?;
         if let Some(rest) = tag.strip_prefix("P\t") {
             let mut r = rest.split('\t');
@@ -301,6 +417,11 @@ pub fn decode(wire: &str) -> Option<String> {
             gap_cols.push(decode_value_column(tag, &mut lines, n_rows)?);
         }
     }
+    let tail_col = if tail_mode {
+        Some(decode_value_column(lines.next()?, &mut lines, n_rows)?)
+    } else {
+        None
+    };
 
     let mut out: Vec<String> = Vec::with_capacity(total);
     let (mut row, mut exc) = (0usize, 0usize);
@@ -314,7 +435,10 @@ pub fn decode(wire: &str) -> Option<String> {
                 line.push_str(gap_cols[col].get(row)?);
                 line.push_str(token_cols[col].get(row)?);
             }
-            line.push_str(gap_cols[n].get(row)?);
+            match &tail_col {
+                Some(tail) => line.push_str(tail.get(row)?),
+                None => line.push_str(gap_cols[n].get(row)?),
+            }
             out.push(line);
             row += 1;
         } else {
@@ -325,7 +449,7 @@ pub fn decode(wire: &str) -> Option<String> {
     Some(out.join("\n"))
 }
 
-fn decode_value_column<'a>(
+pub(crate) fn decode_value_column<'a>(
     tag: &str,
     lines: &mut impl Iterator<Item = &'a str>,
     n_rows: usize,
@@ -525,6 +649,65 @@ mod tests {
                             raw.push_str(&" ".repeat(pad));
                         }
                     }
+                }
+                raw.push('\n');
+            }
+            let raw = raw.trim_end_matches('\n');
+            if let Some(enc) = try_encode(raw, &bytes) {
+                assert_eq!(enc.decoded, raw, "internal decode must equal raw");
+                assert_eq!(
+                    decode(&enc.wire).as_deref(),
+                    Some(raw),
+                    "wire must decode to raw"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn ragged_table_with_free_text_tail_transposes() {
+        let mut raw = String::from("USER          PID STAT COMMAND\n");
+        for i in 0..60 {
+            let cmd = match i % 3 {
+                0 => "claude".to_string(),
+                1 => "/usr/bin/some daemon --flag".to_string(),
+                _ => "/Applications/App.app/Contents/MacOS/App --a --b --c".to_string(),
+            };
+            raw.push_str(&format!("user{:<3} {:>8}  S   {cmd}\n", i % 9, 100 + i * 7));
+        }
+        let raw = raw.trim_end();
+        let enc = try_encode(raw, &bytes).expect("ragged table should compress");
+        assert_eq!(enc.decoded, raw, "byte-exact");
+        assert!(
+            enc.wire.lines().next().unwrap().ends_with("\t1"),
+            "expected tail mode, header: {}",
+            enc.wire.lines().next().unwrap()
+        );
+        assert!(enc.wire.len() < raw.len());
+    }
+
+    #[test]
+    fn fuzz_ragged_tail_is_lossless_or_abstains() {
+        let alphabets = ["abc", "a b", "root", "12345", "caf\u{00e9}\u{1f680}", ""];
+        let mut seed = 0x1234_5678u32;
+        let mut rng = || {
+            seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+            seed
+        };
+        for _ in 0..8000 {
+            let rows = (rng() % 14) as usize;
+            let fixed = 1 + (rng() % 4) as usize;
+            let mut raw = String::new();
+            for _ in 0..rows {
+                for c in 0..fixed {
+                    if c > 0 {
+                        raw.push_str(&" ".repeat(1 + (rng() as usize % 4)));
+                    }
+                    raw.push_str(alphabets[rng() as usize % alphabets.len()]);
+                }
+                for _ in 0..(rng() % 5) {
+                    raw.push(' ');
+                    raw.push_str(alphabets[rng() as usize % alphabets.len()]);
                 }
                 raw.push('\n');
             }

@@ -2,6 +2,10 @@ use std::sync::Arc;
 
 use serde_json::{Map, Value};
 
+use crate::column::{
+    ColumnCodec, choose_codec, codec_header, decode_cell, is_scalar, parse_codec, produces_cells,
+    render_cells, scalar_token, string_token,
+};
 use crate::tokens::{ByteCounter, TokenCounter};
 use crate::transform::{Encoded, Transform};
 
@@ -26,16 +30,6 @@ impl Columnar {
     pub fn with_counter(counter: Arc<dyn TokenCounter>) -> Self {
         Self { counter }
     }
-}
-
-enum ColumnCodec {
-    Const(String),
-    Dict {
-        values: Vec<String>,
-        index: Vec<usize>,
-    },
-    RawString,
-    Json,
 }
 
 impl Transform for Columnar {
@@ -80,7 +74,7 @@ impl Transform for Columnar {
         }
 
         let codecs: Vec<ColumnCodec> = (0..keys.len())
-            .map(|c| choose_codec(&tokens[c], &is_string[c], self.counter.as_ref()))
+            .map(|c| choose_codec(&tokens[c], &is_string[c], self.counter.as_ref(), true))
             .collect();
 
         let mut wire = format!("{HEADER} {}\n{}", items.len(), keys.len());
@@ -108,77 +102,6 @@ impl Transform for Columnar {
     }
 }
 
-fn choose_codec(tokens: &[String], is_string: &[bool], counter: &dyn TokenCounter) -> ColumnCodec {
-    if tokens.iter().all(|t| t == &tokens[0]) {
-        return ColumnCodec::Const(tokens[0].clone());
-    }
-
-    let mut order: Vec<String> = Vec::new();
-    let mut seen: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
-    let mut index = Vec::with_capacity(tokens.len());
-    for token in tokens {
-        let pos = *seen.entry(token.as_str()).or_insert_with(|| {
-            order.push(token.clone());
-            order.len() - 1
-        });
-        index.push(pos);
-    }
-
-    let string_safe = is_string.iter().all(|s| *s)
-        && tokens
-            .iter()
-            .all(|t| !unquote(t).contains('\t') && !unquote(t).contains('\n'));
-
-    let mut candidates = vec![
-        ColumnCodec::Dict {
-            values: order,
-            index,
-        },
-        ColumnCodec::Json,
-    ];
-    if string_safe {
-        candidates.push(ColumnCodec::RawString);
-    }
-    candidates
-        .into_iter()
-        .min_by_key(|codec| column_cost(codec, tokens, counter))
-        .expect("at least the json candidate is present")
-}
-
-// Counted cost of a column under a codec: header plus every rendered cell.
-fn column_cost(codec: &ColumnCodec, tokens: &[String], counter: &dyn TokenCounter) -> usize {
-    let mut cost = counter.count(&codec_header(codec));
-    if let Some(cells) = render_cells(codec, tokens) {
-        cost += cells.iter().map(|cell| counter.count(cell)).sum::<usize>();
-    }
-    cost
-}
-
-fn codec_header(codec: &ColumnCodec) -> String {
-    match codec {
-        ColumnCodec::Const(token) => format!("const\t{token}"),
-        ColumnCodec::Dict { values, .. } => {
-            let mut s = format!("dict\t{}", values.len());
-            for v in values {
-                s.push('\t');
-                s.push_str(v);
-            }
-            s
-        }
-        ColumnCodec::RawString => "str".into(),
-        ColumnCodec::Json => "json".into(),
-    }
-}
-
-fn render_cells(codec: &ColumnCodec, tokens: &[String]) -> Option<Vec<String>> {
-    match codec {
-        ColumnCodec::Const(_) => None,
-        ColumnCodec::Dict { index, .. } => Some(index.iter().map(usize::to_string).collect()),
-        ColumnCodec::RawString => Some(tokens.iter().map(|t| unquote(t)).collect()),
-        ColumnCodec::Json => Some(tokens.to_vec()),
-    }
-}
-
 pub fn decode(wire: &str) -> Option<Value> {
     let mut lines = wire.split('\n');
     let count: usize = lines.next()?.strip_prefix(HEADER)?.trim().parse().ok()?;
@@ -198,10 +121,7 @@ pub fn decode(wire: &str) -> Option<Value> {
     for _ in 0..n_keys {
         codecs.push(parse_codec(lines.next()?)?);
     }
-    let n_cells = codecs
-        .iter()
-        .filter(|c| !matches!(c, DecodedCodec::Const(_)))
-        .count();
+    let n_cells = codecs.iter().filter(|c| produces_cells(c)).count();
 
     let mut items = Vec::with_capacity(count);
     for _ in 0..count {
@@ -217,16 +137,12 @@ pub fn decode(wire: &str) -> Option<Value> {
         let mut obj = Map::new();
         let mut cell_iter = cells.into_iter();
         for (key, codec) in keys.iter().zip(&codecs) {
-            let value = match codec {
-                DecodedCodec::Const(v) => v.clone(),
-                DecodedCodec::Dict(values) => {
-                    let idx: usize = cell_iter.next()?.parse().ok()?;
-                    values.get(idx)?.clone()
-                }
-                DecodedCodec::RawString => Value::String(cell_iter.next()?.to_string()),
-                DecodedCodec::Json => serde_json::from_str(cell_iter.next()?).ok()?,
+            let cell = if produces_cells(codec) {
+                Some(cell_iter.next()?)
+            } else {
+                None
             };
-            obj.insert(key.clone(), value);
+            obj.insert(key.clone(), decode_cell(codec, cell)?);
         }
         items.push(Value::Object(obj));
     }
@@ -234,52 +150,6 @@ pub fn decode(wire: &str) -> Option<Value> {
         return None;
     }
     Some(Value::Array(items))
-}
-
-enum DecodedCodec {
-    Const(Value),
-    Dict(Vec<Value>),
-    RawString,
-    Json,
-}
-
-fn parse_codec(header: &str) -> Option<DecodedCodec> {
-    let mut fields = header.split('\t');
-    match fields.next()? {
-        "const" => Some(DecodedCodec::Const(
-            serde_json::from_str(fields.next()?).ok()?,
-        )),
-        "dict" => {
-            let n: usize = fields.next()?.parse().ok()?;
-            let mut values = Vec::with_capacity(n);
-            for _ in 0..n {
-                values.push(serde_json::from_str(fields.next()?).ok()?);
-            }
-            if fields.next().is_some() {
-                return None;
-            }
-            Some(DecodedCodec::Dict(values))
-        }
-        "str" => Some(DecodedCodec::RawString),
-        "json" => Some(DecodedCodec::Json),
-        _ => None,
-    }
-}
-
-fn unquote(token: &str) -> String {
-    serde_json::from_str::<String>(token).unwrap_or_else(|_| token.to_string())
-}
-
-fn is_scalar(value: &Value) -> bool {
-    !value.is_object() && !value.is_array()
-}
-
-fn scalar_token(value: &Value) -> Option<String> {
-    serde_json::to_string(value).ok()
-}
-
-fn string_token(s: &str) -> String {
-    serde_json::to_string(s).expect("string serializes")
 }
 
 #[cfg(test)]
@@ -303,7 +173,7 @@ mod tests {
     }
 
     #[test]
-    fn low_cardinality_column_uses_a_dictionary() {
+    fn low_cardinality_column_round_trips() {
         round_trip(r#"[{"s":"ok"},{"s":"FAIL"},{"s":"ok"},{"s":"ok"},{"s":"FAIL"},{"s":"ok"}]"#);
     }
 
@@ -313,7 +183,7 @@ mod tests {
     }
 
     #[test]
-    fn constant_column_stored_once() {
+    fn constant_column_round_trips() {
         round_trip(r#"[{"id":1,"kind":"host"},{"id":2,"kind":"host"},{"id":3,"kind":"host"}]"#);
     }
 
@@ -338,5 +208,30 @@ mod tests {
     #[test]
     fn string_value_that_looks_numeric_stays_a_string() {
         round_trip(r#"[{"k":"007"},{"k":"008"},{"k":"007"}]"#);
+    }
+
+    #[test]
+    fn url_column_stays_literal_and_readable() {
+        let json = r#"[{"u":"https://api.github.com/repos/cli/cli/issues/1"},{"u":"https://api.github.com/repos/cli/cli/issues/2"},{"u":"https://api.github.com/repos/cli/cli/issues/33"}]"#;
+        let value: Value = serde_json::from_str(json).unwrap();
+        let encoded = Columnar::default().try_encode(&value).unwrap();
+        assert!(
+            !encoded.wire.contains("affix\t") && encoded.wire.contains("issues/33"),
+            "inline wire must keep values literal, wire:\n{}",
+            encoded.wire
+        );
+        assert_eq!(decode(&encoded.wire).unwrap(), value);
+    }
+
+    #[test]
+    fn shared_prefix_and_suffix_round_trip() {
+        round_trip(r#"[{"f":"src/mod_a.rs"},{"f":"src/mod_bb.rs"},{"f":"src/mod_ccc.rs"}]"#);
+    }
+
+    #[test]
+    fn unicode_values_round_trip() {
+        round_trip(
+            "[{\"s\":\"caf\u{00e9}_1\"},{\"s\":\"caf\u{00e9}_22\"},{\"s\":\"caf\u{00e9}_333\"}]",
+        );
     }
 }

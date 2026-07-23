@@ -15,11 +15,33 @@ pub fn declaration_count(code: &str) -> usize {
 }
 
 pub fn outline(code: &str, budget: usize) -> Option<String> {
+    // Prefer a real AST outline (full signatures, attributes, no local-variable noise) when the
+    // grammar is compiled in; the grammar-free heuristic below is the always-available fallback.
+    #[cfg(feature = "treesitter")]
+    if ast_outline_enabled()
+        && let Some(ast) = crate::treesit::outline(code, budget)
+    {
+        return Some(ast);
+    }
     let decls = declarations(code);
     if decls.len() < MIN_DECLS {
         return None;
     }
     Some(render(&decls, code.lines().count(), budget))
+}
+
+// Runtime off-switch even when the grammar is compiled in: SW_AST_OUTLINE=0 falls back to the
+// heuristic, so a prebuilt-package user can opt out without rebuilding. Read once.
+#[cfg(feature = "treesitter")]
+fn ast_outline_enabled() -> bool {
+    use std::sync::OnceLock;
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        !matches!(
+            std::env::var("SW_AST_OUTLINE").as_deref(),
+            Ok("0") | Ok("false") | Ok("off")
+        )
+    })
 }
 
 fn declarations(code: &str) -> Vec<Decl> {

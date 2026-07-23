@@ -141,6 +141,7 @@ pub fn grep_claims(text: &str) -> Vec<(String, String)> {
         };
         if path.is_empty()
             || path.contains(' ')
+            || path.contains('\t')
             || !(path.contains('/') || path.contains('.'))
             || line_no.is_empty()
             || !line_no.bytes().all(|b| b.is_ascii_digit())

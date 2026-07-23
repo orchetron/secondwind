@@ -41,3 +41,4 @@ Thumbs.db
 venv/
 .pytest_cache/
 .ruff_cache/
+bench/compression/workloads/

@@ -1,3 +1,5 @@
+use crate::text_columnar::{cheapest, decode_value_column, generic_candidates};
+
 const HEADER: &str = "SWGREP";
 
 pub struct Factored {
@@ -5,51 +7,54 @@ pub struct Factored {
     pub decoded: String,
 }
 
-enum Row<'a> {
-    Match(usize, &'a str, usize),
-    Path(usize, &'a str),
-    Verbatim(&'a str),
-}
-
-// Factor repeated path and snippet into dictionaries, values kept literal; non-match lines verbatim. Gated on byte-exact decode.
-pub fn try_factor(raw: &str) -> Option<Factored> {
-    let mut paths = Dict::default();
-    let mut snippets = Dict::default();
-    let mut rows = Vec::new();
-    let mut matches = 0;
+// Columnar grep/rg output: each line splits into path, line, and content columns, each picking its own
+// codec (front coding folds shared path prefixes; content stays raw when unique). Non-match lines stay
+// verbatim by position. Gated on a real saving and a byte-exact decode.
+pub fn try_factor(raw: &str, cost: &dyn Fn(&str) -> usize) -> Option<Factored> {
+    let mut types: Vec<u8> = Vec::new();
+    let mut paths: Vec<&str> = Vec::new();
+    let mut linenos: Vec<&str> = Vec::new();
+    let mut contents: Vec<&str> = Vec::new();
+    let mut suffixes: Vec<&str> = Vec::new();
+    let mut verbatims: Vec<&str> = Vec::new();
 
     for line in raw.split('\n') {
         if let Some((path, line_no, content)) = split_match(line) {
-            rows.push(Row::Match(
-                paths.intern(path),
-                line_no,
-                snippets.intern(content),
-            ));
-            matches += 1;
+            types.push(b'M');
+            paths.push(path);
+            linenos.push(line_no);
+            contents.push(content);
         } else if let Some(path) = grep_path(line) {
-            rows.push(Row::Path(paths.intern(path), &line[path.len()..]));
-            matches += 1;
+            types.push(b'P');
+            paths.push(path);
+            suffixes.push(&line[path.len()..]);
         } else {
-            rows.push(Row::Verbatim(line));
+            types.push(b'V');
+            verbatims.push(line);
         }
     }
-    if matches < 2 {
+    if paths.len() < 2 {
         return None;
     }
 
-    let mut wire = format!("{HEADER} {}", rows.len());
-    write_dict(&mut wire, &paths.items);
-    write_dict(&mut wire, &snippets.items);
-    for row in &rows {
+    let mut wire = format!(
+        "{HEADER}\t{}\t{}\t{}\n",
+        types.len(),
+        linenos.len(),
+        suffixes.len()
+    );
+    wire.push_str(&encode_types(&types));
+    wire.push('\n');
+    for v in &verbatims {
+        wire.push_str(v);
         wire.push('\n');
-        match row {
-            Row::Match(pi, ln, si) => wire.push_str(&format!("M\t{pi}\t{ln}\t{si}")),
-            Row::Path(pi, suffix) => wire.push_str(&format!("P\t{pi}\t{suffix}")),
-            Row::Verbatim(line) => wire.push_str(&format!("V\t{line}")),
-        }
     }
+    wire.push_str(&cheapest(generic_candidates(&paths), cost));
+    wire.push_str(&cheapest(generic_candidates(&linenos), cost));
+    wire.push_str(&cheapest(generic_candidates(&contents), cost));
+    wire.push_str(&cheapest(generic_candidates(&suffixes), cost));
 
-    if wire.len() >= raw.len() {
+    if cost(&wire) >= cost(raw) {
         return None;
     }
     let decoded = decode(&wire)?;
@@ -60,39 +65,93 @@ pub fn try_factor(raw: &str) -> Option<Factored> {
 }
 
 pub fn decode(wire: &str) -> Option<String> {
-    let (tag, rest) = wire.split_once(' ')?;
-    if tag != HEADER {
+    let mut lines = wire.split('\n');
+    let mut head = lines.next()?.split('\t');
+    if head.next()? != HEADER {
         return None;
     }
-    let mut lines = rest.split('\n');
-    let count: usize = lines.next()?.trim().parse().ok()?;
-    let paths = read_dict(&mut lines)?;
-    let snippets = read_dict(&mut lines)?;
+    let n_rows: usize = head.next()?.parse().ok()?;
+    let n_m: usize = head.next()?.parse().ok()?;
+    let n_p: usize = head.next()?.parse().ok()?;
 
-    let mut out = Vec::with_capacity(count);
-    for _ in 0..count {
-        let (tag, payload) = lines.next()?.split_once('\t')?;
-        match tag {
-            "M" => {
-                let mut cols = payload.splitn(3, '\t');
-                let path = paths.get(cols.next()?.parse::<usize>().ok()?)?;
-                let line_no = cols.next()?;
-                let snippet = snippets.get(cols.next()?.parse::<usize>().ok()?)?;
-                out.push(format!("{path}:{line_no}:{snippet}"));
+    let types = decode_types(lines.next()?, n_rows)?;
+    let n_v = types.iter().filter(|&&t| t == b'V').count();
+    let mut verbatims = Vec::with_capacity(n_v);
+    for _ in 0..n_v {
+        verbatims.push(lines.next()?);
+    }
+
+    let tag = lines.next()?;
+    let paths = decode_value_column(tag, &mut lines, n_m + n_p)?;
+    let tag = lines.next()?;
+    let linenos = decode_value_column(tag, &mut lines, n_m)?;
+    let tag = lines.next()?;
+    let contents = decode_value_column(tag, &mut lines, n_m)?;
+    let tag = lines.next()?;
+    let suffixes = decode_value_column(tag, &mut lines, n_p)?;
+
+    let (mut pi, mut mi, mut si, mut vi) = (0usize, 0usize, 0usize, 0usize);
+    let mut out = Vec::with_capacity(n_rows);
+    for &t in &types {
+        match t {
+            b'M' => {
+                out.push(format!(
+                    "{}:{}:{}",
+                    paths.get(pi)?,
+                    linenos.get(mi)?,
+                    contents.get(mi)?
+                ));
+                pi += 1;
+                mi += 1;
             }
-            "P" => {
-                let (idx, suffix) = payload.split_once('\t')?;
-                let path = paths.get(idx.parse::<usize>().ok()?)?;
-                out.push(format!("{path}{suffix}"));
+            b'P' => {
+                out.push(format!("{}{}", paths.get(pi)?, suffixes.get(si)?));
+                pi += 1;
+                si += 1;
             }
-            "V" => out.push(payload.to_string()),
-            _ => return None,
+            _ => {
+                out.push(verbatims.get(vi)?.to_string());
+                vi += 1;
+            }
         }
     }
-    if lines.next().is_some() {
-        return None;
-    }
     Some(out.join("\n"))
+}
+
+// Alternating M (match) / P (path only) / V (verbatim) runs as <type><count>, e.g. "M40V1M9".
+fn encode_types(types: &[u8]) -> String {
+    let mut out = String::new();
+    let mut i = 0;
+    while i < types.len() {
+        let t = types[i];
+        let mut j = i;
+        while j < types.len() && types[j] == t {
+            j += 1;
+        }
+        out.push(t as char);
+        out.push_str(&(j - i).to_string());
+        i = j;
+    }
+    out
+}
+
+fn decode_types(s: &str, total: usize) -> Option<Vec<u8>> {
+    let mut out = Vec::with_capacity(total);
+    let mut chars = s.chars().peekable();
+    while let Some(t) = chars.next() {
+        let ty = match t {
+            'M' => b'M',
+            'P' => b'P',
+            'V' => b'V',
+            _ => return None,
+        };
+        let mut num = String::new();
+        while chars.peek().is_some_and(char::is_ascii_digit) {
+            num.push(chars.next()?);
+        }
+        out.resize(out.len() + num.parse::<usize>().ok()?, ty);
+    }
+    (out.len() == total).then_some(out)
 }
 
 // Offload preview for a search: each file once with its match line numbers, spent greedily against the budget.
@@ -139,42 +198,6 @@ pub fn location_map(text: &str, budget: usize) -> Option<String> {
     Some(out)
 }
 
-#[derive(Default)]
-struct Dict<'a> {
-    items: Vec<&'a str>,
-    index: std::collections::HashMap<&'a str, usize>,
-}
-
-impl<'a> Dict<'a> {
-    fn intern(&mut self, s: &'a str) -> usize {
-        if let Some(&pos) = self.index.get(s) {
-            return pos;
-        }
-        let pos = self.items.len();
-        self.items.push(s);
-        self.index.insert(s, pos);
-        pos
-    }
-}
-
-fn write_dict(wire: &mut String, items: &[&str]) {
-    wire.push('\n');
-    wire.push_str(&items.len().to_string());
-    for it in items {
-        wire.push('\n');
-        wire.push_str(it);
-    }
-}
-
-fn read_dict<'a>(lines: &mut std::str::Split<'a, char>) -> Option<Vec<&'a str>> {
-    let n: usize = lines.next()?.parse().ok()?;
-    let mut out = Vec::with_capacity(n);
-    for _ in 0..n {
-        out.push(lines.next()?);
-    }
-    Some(out)
-}
-
 // `path:line:content`: path (contains / or ., no spaces) up to the first colon,
 // an all-digit line number up to the second colon, content (any bytes) after.
 fn split_match(line: &str) -> Option<(&str, &str, &str)> {
@@ -201,13 +224,32 @@ fn grep_path(line: &str) -> Option<&str> {
 mod tests {
     use super::*;
 
+    fn bytes(s: &str) -> usize {
+        s.len()
+    }
+
     #[test]
-    fn factors_both_repeated_paths_and_repeated_snippets() {
-        let raw = "src/a.rs:10:// TODO fix\nsrc/a.rs:44:// TODO fix\nsrc/b.rs:3:// TODO fix\nsrc/b.rs:9:done";
-        let out = try_factor(raw).unwrap();
-        assert_eq!(out.wire.matches("src/a.rs").count(), 1);
-        assert_eq!(out.wire.matches("// TODO fix").count(), 1);
-        assert!(out.wire.len() < raw.len());
+    fn factors_repeated_paths_and_shared_prefixes() {
+        let mut lines = Vec::new();
+        for i in 0..12 {
+            lines.push(format!(
+                "crates/report/src/scoreboard.rs:{}:let acme = find();",
+                10 + i
+            ));
+            lines.push(format!(
+                "crates/report/src/lib.rs:{}:let acme = find();",
+                20 + i
+            ));
+        }
+        let raw = lines.join("\n");
+        let out = try_factor(&raw, &bytes).unwrap();
+        assert!(
+            out.wire.len() < raw.len(),
+            "wire {} !< raw {}",
+            out.wire.len(),
+            raw.len()
+        );
+        assert!(out.wire.contains("crates/report/src/scoreboard.rs"));
         assert_eq!(decode(&out.wire).unwrap(), raw);
     }
 
@@ -217,7 +259,7 @@ mod tests {
             .map(|i| format!("src/very/long/module_path.rs:{i}:the same matched line here"))
             .collect::<Vec<_>>()
             .join("\n");
-        let out = try_factor(&raw).unwrap();
+        let out = try_factor(&raw, &bytes).unwrap();
         assert!(out.wire.contains("src/very/long/module_path.rs"));
         assert!(out.wire.contains("the same matched line here"));
         assert_eq!(decode(&out.wire).unwrap(), raw);
@@ -230,7 +272,7 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n")
             + "\n";
-        let out = try_factor(&raw).unwrap();
+        let out = try_factor(&raw, &bytes).unwrap();
         assert_eq!(decode(&out.wire).unwrap(), raw);
     }
 
@@ -240,7 +282,7 @@ mod tests {
             .map(|i| format!("src/some/long/path.rs:matched fragment number {i} here"))
             .collect::<Vec<_>>()
             .join("\n");
-        let out = try_factor(&raw).unwrap();
+        let out = try_factor(&raw, &bytes).unwrap();
         assert_eq!(decode(&out.wire).unwrap(), raw);
     }
 
@@ -250,14 +292,14 @@ mod tests {
             .map(|i| format!("p/q.rs:{i}:\tlet url = \"http://x:8080/path\";"))
             .collect::<Vec<_>>()
             .join("\n");
-        let out = try_factor(&raw).unwrap();
+        let out = try_factor(&raw, &bytes).unwrap();
         assert_eq!(decode(&out.wire).unwrap(), raw);
     }
 
     #[test]
     fn refuses_prose_and_incompressible_input() {
-        assert!(try_factor("just some prose\nwith no paths").is_none());
-        assert!(try_factor("a/b.rs:1:x\nc/d.rs:2:y").is_none());
+        assert!(try_factor("just some prose\nwith no paths", &bytes).is_none());
+        assert!(try_factor("a/b.rs:1:x\nc/d.rs:2:y", &bytes).is_none());
     }
 
     #[test]

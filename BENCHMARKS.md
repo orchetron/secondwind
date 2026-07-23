@@ -3,50 +3,106 @@
 Every number below is reproducible from this repo. Rig: Apple M3 (8 cores), release build,
 warm process. Latency figures count tokens through the shipped tokenizer (the net-cost gate).
 
+## Token reduction on real agent workloads
+
+Two columns, never blended. **Inline** is lossless compression: the block stays in the window, every
+value present and blake3-verified, readable at face value, no round-trip. **Offload** is recoverable
+eviction: the block moves to a marker the agent resolves on demand, so it is removed-and-recoverable,
+not compressed. The columns are the two endpoints (offload disabled vs forced); the default `Auto`
+mode picks between them per block. Counted with the cl100k tokenizer.
+
+| Shape | Workload | in tokens | Inline (lossless) | Offload (recoverable) |
+|---|---|---:|---:|---:|
+| Record arrays (JSON) | GitHub pull requests | 312,440 | **38.8%** | 97.9% |
+| | GitHub issues | 127,353 | **15.7%** | 95.2% |
+| | cargo metadata | 333,681 | **3.0%** | 100.0% |
+| | GitHub PRs, flattened | 3,095 | **56.1%** | 84.8% |
+| Object-map JSON | npm registry response | 2,758,223 | **8.4%** | 100.0% |
+| | PyPI registry response | 81,071 | **19.9%** | 99.9% |
+| | package-lock.json | 4,493 | **25.4%** | 98.9% |
+| Dependency & lock graphs | cargo tree | 8,755 | **27.0%** | 99.4% |
+| | Cargo.lock | 21,829 | **17.1%** | 99.8% |
+| Directory & path listings | find | 682 | **37.0%** | 92.8% |
+| | git ls-files | 1,393 | **21.7%** | 97.0% |
+| | ls -R | 5,647 | – | **98.9%** |
+| Code search | grep (path:line:content) | 5,758 | **15.7%** | 91.9% |
+| | signatures | 4,429 | **15.8%** | 92.1% |
+| Diffs & version control | git log | 4,698 | – | **98.6%** |
+| | git diff | 2,879 | – | **94.0%** |
+| Free text | prose (public domain) | 34,639 | – | **99.9%** |
+
+Inline reduction is what the model can read at face value: structure removed, every value kept, no
+decoder in the loop. That readability bound is why the inline figures are moderate (3-56%) rather than
+the higher ratios an unreadable re-encoding would print. Offload is the recoverable ceiling when the
+agent carries a resolve tool, and it applies to any shape (85-100%), including the ones with no inline
+lever (object maps, recursive listings, free text, shown as `–`).
+
+The default `Auto` mode does not take the offload endpoint blindly: it offloads only when the eviction
+preview covers the block's content (record arrays) or the shape has no inline lever, and ships inline
+everywhere else, so nothing readable is evicted that could be kept in place.
+
+```sh
+bash bench/compression/gen_workloads.sh   # rebuild the corpus from public/safe sources
+cargo run -p secondwind-optimize --example inline_bench --release --features tiktoken -- \
+  bench/compression/workloads/*
+```
+
+The corpus is regenerated from this repository itself plus (optionally) public GitHub, npm, PyPI, and
+Project Gutenberg; it is gitignored, so no personal environment or process data is ever committed. The
+repo-local rows are near-deterministic; the live public-data rows are representative and vary a few
+points run to run.
+
 ## Compression latency
 
-Per tool-output block, over thousands of samples. This is first-sight cost: a resent block
-hits the freeze cache and skips compression entirely.
+Per tool-output block, warm process, tokens counted through the shipped tokenizer. This is first-sight
+cost: a block resent within a conversation hits the freeze cache and skips compression entirely.
 
 | block (JSON array) | ~tokens | p50 | p99 | p99.9 |
 |---|---|---|---|---|
-| 2 KB (15 rows) | 782 | 0.56 ms | 0.70 ms | 0.79 ms |
-| 27 KB (200 rows) | 10,778 | 5.5 ms | 5.9 ms | 6.1 ms |
-| 282 KB (2000 rows) | 109,680 | 55 ms | 66 ms | 71 ms |
+| 2 KB (15 rows) | 782 | 0.72 ms | 1.15 ms | 2.24 ms |
+| 27 KB (200 rows) | 10,778 | 6.94 ms | 10.87 ms | 55.7 ms |
+| 282 KB (2000 rows) | 109,680 | 68 ms | 175 ms | 343 ms |
 
-Latency scales roughly linearly with block size (about 0.2 ms/KB). Compression runs before
-the request is forwarded, so it overlaps a model call that already takes hundreds of ms to
-seconds.
+Latency scales roughly linearly with block size (about 0.25 ms/KB). Compression runs before the request
+is forwarded, so it overlaps a model call that already takes hundreds of ms to seconds.
 
 ```sh
 SW_BENCH2=1 cargo test -p secondwind-optimize --release --features tiktoken \
   bench_stage_latency -- --nocapture --test-threads=1
 ```
 
-### Where the time goes (27 KB block)
+### Where the time goes (27 KB block, mean µs/call)
 
 | stage | µs/block |
 |---|---|
-| codec encode (columnar) | 2,013 |
-| admission proof (CLMH + inverse witness + blake3) | 1,676 |
-| tokenize (net-cost gate) | 1,248 |
-| parse + dup-key scan + detectors | 486 |
-| **total** | **5,575** |
+| admit (CLMH + inverse witness + blake3) | 1,702 |
+| priced (tokenize, net-cost gate) | 1,252 |
+| codec encode (columnar) | 522 |
+| parse (serde_json) | 239 |
+| dup-key scan | 158 |
+| detector suite | 107 |
+| **sum of measured stages** | **3,980** |
+| **full compress_block** | **7,128** |
+
+The full call exceeds the summed stages because it also runs the inline-vs-offload gate (a content-table
+coverage check) and, for a record array the cost model elects to evict, the offload store write. The
+admit proof and the tokenizer, not the codec, dominate: losslessness and honest pricing are the cost.
 
 ## Proxy throughput
 
-The `serve` proxy under load (`oha`, 50 concurrent connections, 10 s, against a local mock
-upstream so the numbers reflect the proxy, not the model API).
+The `serve` proxy under load (`oha`, 50 concurrent connections, against a local mock upstream so the
+numbers reflect the proxy, not the model API).
 
-| request | body | req/sec/node | req/min/node | p50 | p99 |
-|---|---|---|---|---|---|
-| passthrough (no compressible output) | 115 B | 55,194 | ~3.3 M | 0.85 ms | 1.95 ms |
-| compressible tool output (cache hit) | 38.6 KB | 3,375 | ~202 k | 10.6 ms | 82 ms |
-| direct to upstream (no proxy, baseline) | 115 B | 167,355 | ~10 M | n/a | n/a |
+| request | body | req/sec/node | p50 | p99 |
+|---|---|---|---|---|
+| passthrough (no compressible output) | 78 B | 53,974 | 0.88 ms | 2.01 ms |
+| compressible tool output (compressed each request) | 31 KB | 5,818 | 6.76 ms | 40.6 ms |
+| direct to upstream (no proxy, baseline) | 78 B | 174,530 | n/a | n/a |
 
-All runs: 100% success. Throughput is bounded by request body size (each request is parsed
-and re-serialized), not by compression: a resent or non-compressible request never
-recompresses.
+All runs: 100% success. Passthrough and baseline are bounded by request body size (each request is parsed
+and re-serialized), not compression. The compressible row is the compress-every-request floor: `oha`
+sends independent requests, so none share a conversation and none hit the freeze cache; within a real
+conversation a resent block hits that cache and skips compression, tracking the passthrough row instead.
 
 ```sh
 cargo run -p secondwind --example mock_upstream --release &          # mock model API on :9099
@@ -55,16 +111,16 @@ oha -c 50 -z 10s -m POST -H 'content-type: application/json' \
   -D body.json http://127.0.0.1:8787/v1/messages                     # any Anthropic/OpenAI body
 ```
 
-## Compression ratio
+## Compression ratio (bytes)
 
-Byte reduction per tool-output shape, with every value verified present (the test fails if
-any value is lost). Token-level numbers and method are in [bench/](bench/).
+Byte reduction per shape, with every value verified present against the recovered body (the test fails
+if any value is lost). The `via` column keeps inline compression and recoverable offload distinct.
 
-| shape | byte reduction | values kept |
-|---|---|---|
-| high-cardinality array | 56.6% | 991/991 |
-| low-cardinality array | 88.4% | 11/11 |
-| flat object | 94.8% | 1200/1200 |
+| shape | reduction | via | values kept |
+|---|---|---|---|
+| high-cardinality array | 55.5% | inline (columnar) | 991/991 |
+| low-cardinality array | 70.4% | inline (columnar) | 11/11 |
+| flat object | 94.8% | offload (recoverable) | 1200/1200 |
 
 ```sh
 cargo test -p secondwind-optimize --test compression_bench -- --nocapture
@@ -76,5 +132,5 @@ cargo test -p secondwind-optimize --test compression_bench -- --nocapture
   will vary with hardware and workload.
 - The proxy load test uses an instant mock upstream; a real model API adds hundreds of ms
   to seconds per request, which dwarfs the proxy's own overhead.
-- The compressible-throughput row is cache-hit traffic (a fixed body). The per-block
-  compression latency table is the fresh-compression cost, measured single-thread.
+- The compression latency table is the fresh-compression cost, measured single-thread; the
+  compressible-throughput row is the same cost under concurrent load.

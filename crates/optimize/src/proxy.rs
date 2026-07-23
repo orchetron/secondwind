@@ -5,7 +5,7 @@ use serde_json::Value;
 
 use crate::offload::OffloadStore;
 use crate::shape::pick_shaper;
-use crate::{KeptReason, Optimizer, Outcome, certificate};
+use crate::{KeptReason, OffloadMode, Optimizer, Outcome, certificate};
 
 // The marker an offloaded stub carries, for checking recoverability against the store.
 fn offload_marker(stub: &str) -> Option<&str> {
@@ -168,6 +168,19 @@ impl FreezeState {
     }
 }
 
+// Resolve the eviction mode for a request. No resolver forces Off (an offload could never be
+// surfaced). With one, SW_OFFLOAD_MODE picks off/always; anything else keeps the Auto cost model.
+fn offload_mode_for(has_resolver: bool) -> OffloadMode {
+    if !has_resolver {
+        return OffloadMode::Off;
+    }
+    match std::env::var("SW_OFFLOAD_MODE").ok().as_deref() {
+        Some("off") => OffloadMode::Off,
+        Some("always") => OffloadMode::Always,
+        _ => OffloadMode::Auto,
+    }
+}
+
 // Rewrites a request in place: compresses each tool-output block (a RequestShaper locates them,
 // whatever the wire shape). Inline always applies; offload only when the agent carries a resolver.
 // Verbatim blocks untouched, so a request only ever shrinks. One stat per rewritten block.
@@ -193,8 +206,9 @@ pub fn rewrite(
     let has_resolver = resolver.is_some();
     let resolver_name = resolver.unwrap_or_default();
     // Without a resolver an offload could never be surfaced, so prefer inline lossless codecs
-    // over an offload that would only be kept verbatim.
-    optimizer.set_offload_allowed(has_resolver);
+    // over an offload that would only be kept verbatim. With one, SW_OFFLOAD_MODE lets a host force
+    // eviction (always) or disable it (off); the default stays the Auto cost model.
+    optimizer.set_offload_mode(offload_mode_for(has_resolver));
 
     let mut stats = Vec::new();
     shaper.rewrite_tool_outputs(body, &exempt, &mut |raw: &str, age: u32| {

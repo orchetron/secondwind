@@ -1,6 +1,9 @@
 use serde_json::Value;
 
-use crate::{atom, columnar, dict, lines, log, offload, search, text_columnar};
+use crate::{
+    atom, columnar, dict, doc, frontlines, grouped, kv, lines, lock, log, nested, norm, offload,
+    recordcol, search, shred, text_columnar, tree,
+};
 
 // Portable fidelity proof: hash of the canonical original. Anyone can decode a wire,
 // recompute the hash, and confirm losslessness without trusting the compressor.
@@ -28,10 +31,28 @@ fn reconstruct(wire: &str) -> Option<String> {
     if let Some(value) = columnar::decode(wire) {
         return Some(atom::canonicalize(&value));
     }
+    if let Some(value) = shred::decode(wire) {
+        return Some(atom::canonicalize(&value));
+    }
+    if let Some(value) = nested::decode(wire) {
+        return Some(atom::canonicalize(&value));
+    }
+    if let Some(value) = doc::decode(wire) {
+        return Some(atom::canonicalize(&value));
+    }
+    if let Some(value) = norm::decode(wire) {
+        return Some(atom::canonicalize(&value));
+    }
     if let Some(text) = text_columnar::decode(wire) {
         return Some(canonical(&text));
     }
     if let Some(text) = search::decode(wire) {
+        return Some(canonical(&text));
+    }
+    if let Some(text) = recordcol::decode(wire) {
+        return Some(canonical(&text));
+    }
+    if let Some(text) = kv::decode(wire) {
         return Some(canonical(&text));
     }
     if let Some(text) = log::decode(wire) {
@@ -42,6 +63,18 @@ fn reconstruct(wire: &str) -> Option<String> {
     }
     if let Some(text) = lines::decode(wire) {
         return Some(canonical(&text));
+    }
+    if let Some(text) = frontlines::decode(wire) {
+        return Some(canonical(&text));
+    }
+    if let Some(text) = grouped::decode(wire) {
+        return Some(canonical(&text));
+    }
+    if let Some(text) = tree::decode(wire) {
+        return Some(canonical(&text));
+    }
+    if let Some(value) = lock::decode(wire) {
+        return Some(canonical(&value));
     }
     // No codec matched: verbatim content is its own canonical source.
     Some(canonical(wire))
@@ -92,6 +125,30 @@ mod tests {
         let wire = Columnar::default().try_encode(&value).unwrap().wire;
         let certificate = certify(&raw);
         assert!(verify(&wire, &certificate));
+    }
+
+    #[test]
+    fn a_shred_wire_verifies_against_its_certificate() {
+        let raw = r#"[{"id":1,"user":{"login":"a"},"tags":["x","y"]},{"id":2,"user":{"login":"b"},"tags":[]}]"#;
+        let value: Value = serde_json::from_str(raw).unwrap();
+        let wire = crate::shred::Shred::default()
+            .try_encode(&value)
+            .unwrap()
+            .wire;
+        assert!(
+            verify(&wire, &certify(raw)),
+            "the shred wire must verify lossless"
+        );
+    }
+
+    #[test]
+    fn a_frontlines_wire_verifies_against_its_certificate() {
+        let raw = "./a/b/c.rs\n./a/b/d.rs\n./a/e/f.rs\n./a/e/g.rs";
+        let wire = frontlines::encode(raw).expect("shared prefixes fold");
+        assert!(
+            verify(&wire, &certify(raw)),
+            "the frontlines wire must verify lossless"
+        );
     }
 
     #[test]
