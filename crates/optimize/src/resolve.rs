@@ -7,15 +7,20 @@ pub const TOOL_NAME: &str = "secondwind_resolve";
 pub fn tool_def() -> Value {
     json!({
         "name": TOOL_NAME,
-        "description": "Fetch the full original content of a block shown as an \
-            offload marker of the form <<swload:...>>. Call this when you need the \
-            complete data behind such a marker.",
+        "description": "Fetch content behind an offload marker of the form <<swload:...>>. Omit \
+            `select` for the whole block, or pass a selector to fetch just one part.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "marker": {
                     "type": "string",
                     "description": "The <<swload:...>> marker to expand."
+                },
+                "select": {
+                    "type": "string",
+                    "description": "Optional slice: a '/'-separated path where a segment is \
+                        `field=value` (the record whose field equals value), `[n]` (array index), \
+                        or a field name; or `L<a>-<b>` for a line range. E.g. `number=13932/body`."
                 }
             },
             "required": ["marker"]
@@ -34,8 +39,12 @@ pub fn inject_once(tools: &mut Vec<Value>) {
     }
 }
 
-pub fn handle(store: &Store, marker: &str) -> Option<String> {
-    store.resolve(marker)
+pub fn handle(store: &Store, marker: &str, select: &str) -> Option<String> {
+    let block = store.resolve(marker)?;
+    if select.trim().is_empty() {
+        return Some(block);
+    }
+    crate::select::select(&block, select.trim())
 }
 
 #[cfg(test)]
@@ -73,7 +82,27 @@ mod tests {
                 .join(",")
         );
         let out = store.offload(&raw).unwrap();
-        assert!(handle(&store, &out.marker).is_some());
-        assert_eq!(handle(&store, "<<swload:missing>>"), None);
+        assert_eq!(
+            handle(&store, &out.marker, "").as_deref(),
+            Some(raw.as_str())
+        );
+        assert_eq!(handle(&store, "<<swload:missing>>", ""), None);
+    }
+
+    #[test]
+    fn handle_returns_one_selected_field() {
+        let store = Store::default();
+        let raw = format!(
+            "[{}]",
+            (0..40)
+                .map(|i| format!(r#"{{"n":{i},"body":"detail for row {i} that is long enough"}}"#))
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        let out = store.offload(&raw).unwrap();
+        assert_eq!(
+            handle(&store, &out.marker, "n=7/body").as_deref(),
+            Some("detail for row 7 that is long enough")
+        );
     }
 }

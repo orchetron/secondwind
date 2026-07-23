@@ -110,3 +110,31 @@ fn always_eviction_round_trips() {
     };
     assert_eq!(optimizer.resolve(&marker).as_deref(), Some(block.as_str()));
 }
+
+#[test]
+fn resolve_selected_fetches_one_field_and_keeps_the_whole_block_byte_exact() {
+    // Per-section resolve: one marker, but the agent can pull just one record's field instead of the
+    // whole block, and resolving the marker alone still returns the original bytes exactly.
+    let block = format!(
+        "[{}]",
+        (0..40)
+            .map(|i| format!(r#"{{"n":{i},"body":"detail for row {i} long enough to matter"}}"#))
+            .collect::<Vec<_>>()
+            .join(",")
+    );
+    let mut optimizer = Optimizer::default();
+    optimizer.set_offload_mode(OffloadMode::Always);
+    let Outcome::Offloaded { marker, .. } = optimizer.compress_block(&block) else {
+        panic!("expected offload");
+    };
+    assert_eq!(
+        optimizer.resolve_selected(&marker, "n=7/body").as_deref(),
+        Some("detail for row 7 long enough to matter")
+    );
+    assert_eq!(
+        optimizer.resolve_selected(&marker, "").as_deref(),
+        Some(block.as_str()),
+        "empty selector returns the whole block byte-exact"
+    );
+    assert_eq!(optimizer.resolve_selected(&marker, "n=999/body"), None);
+}

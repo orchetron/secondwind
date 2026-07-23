@@ -37,6 +37,7 @@ pub mod replay;
 pub mod resolve;
 pub mod richness;
 pub mod search;
+pub mod select;
 pub mod shape;
 pub mod shred;
 pub mod text_columnar;
@@ -683,6 +684,15 @@ impl Optimizer {
 
     pub fn resolve(&self, marker: &str) -> Option<String> {
         self.store.resolve(marker)
+    }
+
+    // Resolve one slice of an offloaded block (see select::select); empty selector returns it whole.
+    pub fn resolve_selected(&self, marker: &str, selector: &str) -> Option<String> {
+        let block = self.store.resolve(marker)?;
+        if selector.trim().is_empty() {
+            return Some(block);
+        }
+        select::select(&block, selector.trim())
     }
 }
 

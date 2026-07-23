@@ -81,11 +81,19 @@ fn tool_defs() -> Vec<Value> {
         }),
         json!({
             "name": "resolve",
-            "description": "Fetch the full original content behind an offload marker of the \
-                form <<swload:...>>.",
+            "description": "Fetch content behind an offload marker of the form <<swload:...>>. Omit \
+                `select` for the whole block, or pass a selector to fetch just one part.",
             "inputSchema": {
                 "type": "object",
-                "properties": { "marker": { "type": "string" } },
+                "properties": {
+                    "marker": { "type": "string" },
+                    "select": {
+                        "type": "string",
+                        "description": "Optional slice: a '/'-separated path where a segment is \
+                            `field=value` (the record whose field equals value), `[n]` (array index), \
+                            or a field name; or `L<a>-<b>` for a line range. E.g. `number=13932/body`."
+                    }
+                },
                 "required": ["marker"]
             }
         }),
@@ -155,9 +163,13 @@ fn handle_call(
         }
         "resolve" => {
             let marker = args["marker"].as_str().unwrap_or("");
-            match optimizer.resolve(marker) {
+            let select = args["select"].as_str().unwrap_or("");
+            match optimizer.resolve_selected(marker, select) {
                 Some(body) => result(id, content(&body)),
-                None => result(id, error_content("marker not found or expired")),
+                None => result(
+                    id,
+                    error_content("marker not found, expired, or selector matched nothing"),
+                ),
             }
         }
         _ => result(id, error_content("unknown tool")),

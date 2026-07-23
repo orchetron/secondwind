@@ -620,7 +620,7 @@ fn content_table(text: &str) -> Option<String> {
         String::new()
     };
     Some(format!(
-        "[{} bytes offloaded, content table ({shown} of {} rows{tail}, {} fields), call resolve for omitted fields and full detail]\n{table}",
+        "[{} bytes offloaded, content table ({shown} of {} rows{tail}, {} fields), call resolve (select=field=value for one record) for omitted fields and full detail]\n{table}",
         text.len(),
         objects.len(),
         order.len(),
