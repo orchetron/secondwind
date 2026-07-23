@@ -203,9 +203,19 @@ fn build_state(home: &Path, upstream: &str, shaping: Shaping) -> Arc<AppState> {
         .pool_idle_timeout(Duration::from_secs(90))
         .build()
         .expect("build http client");
+    // Guard on by default; SW_CACHE_GUARD=off re-enables maturation, SW_HOLD_TURNS sets its hold count.
+    let guard = std::env::var("SW_CACHE_GUARD").ok().as_deref() != Some("off");
+    let freeze = match std::env::var("SW_HOLD_TURNS")
+        .ok()
+        .and_then(|s| s.parse::<u32>().ok())
+    {
+        Some(n) => FreezeState::configured(guard, n),
+        None if guard => FreezeState::default(),
+        None => FreezeState::without_cache_guard(),
+    };
     Arc::new(AppState {
         counter: Arc::new(Tiktoken::cl100k()),
-        freeze: Arc::new(FreezeState::default()),
+        freeze: Arc::new(freeze),
         counters: Arc::new(Counters::default()),
         store: Arc::new(Store::persistent(store_dir(home), OFFLOAD_TTL)),
         dir: store_dir(home),

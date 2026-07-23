@@ -52,6 +52,38 @@ Project Gutenberg; it is gitignored, so no personal environment or process data 
 repo-local rows are near-deterministic; the live public-data rows are representative and vary a few
 points run to run.
 
+## Prompt-cache preservation
+
+Rewriting tool output must not disturb a provider's prompt cache: agents resend a growing history every
+turn, so a byte change inside the already-cached prefix forces the whole suffix to be re-billed. This
+measures effective input cost (cache-weighted) over a growing conversation (12 turns, 11 scored),
+secondwind versus sending history verbatim, under a modeled prefix cache (in this model the cache breaks
+at the first differing byte; 1024-token minimum; read and create rates taken from the shipped rate table).
+
+The cache guard is on by default: a block's wire form is decided on first sight and frozen, never
+rewritten on a later turn, so the cached prefix stays byte-stable.
+
+| configuration | vs baseline effective input cost | cache-bust turns |
+|---|---:|---:|
+| inline-only (no resolver) | **+22.9% cheaper** | none |
+| offload, cache guard on (default) | +64.5% cheaper (best case) | none |
+| offload, cache guard off (opt-out) | −128% (dearer) | 8 of 11 |
+
+Both default paths preserve the cache (zero busts) and cost less than sending verbatim. The inline-only
+**+22.9%** is the caveat-free number: every value is kept and readable, no resolve. The offload row's
++64.5% is a best case that measures cost only and assumes the evicted bodies are never resolved back; a
+workload that re-reads a dropped body pays an uncounted round trip. The guard-off row is the maturation
+the guard prevents: deferring an offload past a few turns rewrites an already-cached block, and the
+re-created suffix dwarfs the compression saving. Positive is cheaper.
+
+```sh
+cargo run -p secondwind-optimize --example cache_bench --release --features tiktoken
+```
+
+The prefix-cache model is a documented approximation; the mechanism is confirmed against a live provider
+with real cache tokens (`bench/cache/live_probe.py`): a byte-identical prefix resend reads the entire
+cached prefix, while changing one block inside it drops the read sharply.
+
 ## Compression latency
 
 Per tool-output block, warm process, tokens counted through the shipped tokenizer. This is first-sight
@@ -108,7 +140,7 @@ conversation a resent block hits that cache and skips compression, tracking the 
 cargo run -p secondwind --example mock_upstream --release &          # mock model API on :9099
 secondwind serve --listen 127.0.0.1:8787 --upstream http://127.0.0.1:9099 &
 oha -c 50 -z 10s -m POST -H 'content-type: application/json' \
-  -D body.json http://127.0.0.1:8787/v1/messages                     # any Anthropic/OpenAI body
+  -D body.json http://127.0.0.1:8787/v1/messages                     # any provider request body
 ```
 
 ## Compression ratio (bytes)

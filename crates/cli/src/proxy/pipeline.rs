@@ -208,20 +208,24 @@ mod tests {
             http: reqwest::Client::new(),
         };
 
-        // An aged bulk block offloads, but the broken store can't resolve the marker, so the
-        // whole-request lossless self-proof rejects the rewrite.
-        let mut body = json!({
+        // A covering records block offloads on first sight, but the broken store can't resolve the
+        // marker, so the whole-request lossless self-proof rejects the rewrite.
+        let content = format!(
+            "[{}]",
+            (0..60)
+                .map(|i| format!(
+                    r#"{{"id":{i},"state":"open","title":"r{i}","body":"{}"}}"#,
+                    "long boilerplate detail text repeated for bulk ".repeat(8)
+                ))
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        let body = json!({
             "tools": [{"name": resolver, "description": "swload fetch"}],
             "messages": [{"role": "user", "content": [
-                {"type": "tool_result", "tool_use_id": "t1", "content": "x".repeat(20_000)}
+                {"type": "tool_result", "tool_use_id": "t1", "content": content}
             ]}]
         });
-        for _ in 0..6 {
-            body["messages"]
-                .as_array_mut()
-                .unwrap()
-                .push(json!({"role": "assistant", "content": "step"}));
-        }
         let original = serde_json::to_vec(&body).unwrap();
 
         let out = shape_blocking(&state, "test", "", &original);

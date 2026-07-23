@@ -106,16 +106,46 @@ impl Frozen {
 // Cross-request memory. `frozen` holds each block's chosen wire (Arc) for byte-identical resends
 // that keep the cached prefix stable; `seen` is separate so bounding the wire cache never re-books a
 // counted block. Poison-tolerant locks: one panicked request never wedges the rest.
-#[derive(Default)]
 pub struct FreezeState {
     frozen: RwLock<HashMap<String, Arc<Frozen>>>,
     seen: RwLock<HashSet<String>>,
     // Count-once for kept/refused blocks, separate from `seen` so booking a verbatim block never
     // consumes the first-sight token a later compression of the same bytes needs.
     seen_kept: RwLock<HashSet<String>>,
+    // On by default: decide a block's form on first sight and freeze it; never rewrite a cached prior
+    // turn. Off restores held->offload maturation.
+    cache_guard: bool,
+    // Turns a fresh block is held whole before it may offload; only used when the guard is off.
+    hold_turns: u32,
+}
+
+impl Default for FreezeState {
+    fn default() -> Self {
+        Self {
+            frozen: RwLock::new(HashMap::new()),
+            seen: RwLock::new(HashSet::new()),
+            seen_kept: RwLock::new(HashSet::new()),
+            cache_guard: true,
+            hold_turns: HOLD_TURNS,
+        }
+    }
 }
 
 impl FreezeState {
+    // Off re-enables held->offload maturation; hold_turns sets how long a block is held first.
+    pub fn configured(cache_guard: bool, hold_turns: u32) -> Self {
+        Self {
+            cache_guard,
+            hold_turns,
+            ..Self::default()
+        }
+    }
+
+    // Disable the cache guard with the default hold.
+    pub fn without_cache_guard() -> Self {
+        Self::configured(false, HOLD_TURNS)
+    }
+
     fn get(&self, key: &str) -> Option<Arc<Frozen>> {
         self.frozen
             .read()
@@ -226,9 +256,8 @@ pub fn rewrite(
     stats
 }
 
-// Turns a fresh block is held whole before it may be offloaded: offloading one the model still needs
-// this turn forces a resolve round-trip (inline has no such cost, is not held). Sits just past the
-// 1-2 turns a tool output is typically acted on.
+// Default hold for the guard-off path, overridable via SW_HOLD_TURNS. Heuristic, not measured: just
+// past the 1-2 turns a tool output is typically acted on before the model moves off it.
 const HOLD_TURNS: u32 = 4;
 
 // The wire-agnostic compression of one tool-output block: freeze lookup, gate, and
@@ -245,15 +274,19 @@ fn block_rewrite(
     stats: &mut Vec<BlockStat>,
 ) -> Option<String> {
     let key = block_key(raw);
+    // Guard on => hold 0: decide on first sight, never defer a rewrite past a cached turn.
+    let hold = if memory.cache_guard {
+        0
+    } else {
+        memory.hold_turns
+    };
 
     // Re-emit a block's frozen bytes; book_once still returns false so a resend is never re-counted
     // even if the wire cache was cleared under cap since.
     if let Some(frozen) = memory.get(&key) {
         if frozen.compressed {
-            // A fresh block must not be served an offload stub (from this or another session that aged
-            // the same bytes): it would force a resolve round-trip this turn. Inline is safe fresh or
-            // aged, always served.
-            if !frozen.inline && age < HOLD_TURNS {
+            // Guard off: don't serve a stub where the bytes are still fresh (age < hold).
+            if !frozen.inline && age < hold {
                 return None;
             }
             let first_seen = memory.book_once(&key);
@@ -277,8 +310,12 @@ fn block_rewrite(
     // Fresh block: shape it once, then freeze the result.
     let input_units = optimizer.count(raw);
     let (atoms, cert) = crate::proof(raw);
+    // Relevance split is query-dependent, so its bytes are not reproducible after a freeze clear or
+    // restart; the guard skips it and decides on content alone so a re-decision reproduces the bytes.
     let outcome = match query {
-        Some(q) if !q.trim().is_empty() => optimizer.compress_block_with_query(raw, q),
+        Some(q) if !q.trim().is_empty() && !memory.cache_guard => {
+            optimizer.compress_block_with_query(raw, q)
+        }
         _ => optimizer.compress_block(raw),
     };
     match outcome {
@@ -318,14 +355,14 @@ fn block_rewrite(
             });
             Some(wire)
         }
-        Outcome::Offloaded { .. } if has_resolver && age < HOLD_TURNS => {
-            // Fresh: the model still needs it this turn, so keep it whole. Deliberately not frozen,
-            // so a later turn offloads it once aged.
+        Outcome::Offloaded { .. } if has_resolver && age < hold => {
+            // Guard off: held fresh, not frozen, so a later turn matures it to offload.
             None
         }
-        Outcome::Offloaded { stub, .. } if has_resolver => {
-            // Aged and recoverable: offload behind the marker. The hint is appended after pricing
-            // the stub, so re-price the real wire.
+        Outcome::Offloaded { stub, .. }
+            if has_resolver && (!memory.cache_guard || crate::offload::covers_content(raw)) =>
+        {
+            // Offload: aged (guard off), or a covering preview the model reads without resolving.
             let named = format!(
                 "{stub}\n[secondwind offloaded the full output. To read it verbatim, call the \
                  secondwind `{resolver_name}` tool with the exact marker above. If that tool is not \
@@ -366,6 +403,19 @@ fn block_rewrite(
                 memory.store(key, Frozen::verbatim());
                 None
             }
+        }
+        // Guard on, no covering preview: keep verbatim rather than force a resolve of a fresh result.
+        Outcome::Offloaded { .. } if has_resolver => {
+            push_kept(
+                stats,
+                memory,
+                &key,
+                "cache_guard_verbatim",
+                input_units,
+                atoms,
+            );
+            memory.store(key, Frozen::verbatim());
+            None
         }
         Outcome::KeptVerbatim { reason } => {
             // NotApplicable just means "not a compression candidate" (e.g. too small); only book a
@@ -426,6 +476,20 @@ mod tests {
         rewrite(body, optimizer, resolver, &FreezeState::default())
     }
 
+    // Guard off: exercises the legacy held->offload maturation (defers offload past HOLD_TURNS).
+    fn run_unguarded(
+        body: &mut Value,
+        optimizer: &mut Optimizer,
+        resolver: Option<&str>,
+    ) -> Vec<BlockStat> {
+        rewrite(
+            body,
+            optimizer,
+            resolver,
+            &FreezeState::without_cache_guard(),
+        )
+    }
+
     fn uniform_tool_result() -> String {
         let rows: Vec<String> = (0..40)
             .map(|i| format!(r#"{{"id":{i},"svc":"svc-{i}","port":{}}}"#, 7000 + i))
@@ -435,6 +499,20 @@ mod tests {
 
     fn bulk() -> String {
         "x".repeat(20_000)
+    }
+
+    // A records array whose long bodies the content-table preview truncates, so offload beats inline.
+    fn offloadable() -> String {
+        let rows: Vec<String> = (0..60)
+            .map(|i| {
+                format!(
+                    r#"{{"id":{i},"state":"{}","title":"record {i}","body":"{}"}}"#,
+                    if i % 2 == 0 { "open" } else { "closed" },
+                    "long boilerplate detail text repeated for bulk ".repeat(8)
+                )
+            })
+            .collect();
+        format!("[{}]", rows.join(","))
     }
 
     // Appends enough assistant turns to age every preceding tool output past HOLD_TURNS, so a block
@@ -456,7 +534,7 @@ mod tests {
         });
         age_past_hold(&mut body);
         let mut optimizer = Optimizer::default();
-        let stats = run(&mut body, &mut optimizer, Some("mcp__secondwind__resolve"));
+        let stats = run_unguarded(&mut body, &mut optimizer, Some("mcp__secondwind__resolve"));
 
         assert_eq!(stats.len(), 1);
         assert!(!stats[0].inline);
@@ -532,6 +610,7 @@ mod tests {
 
     #[test]
     fn a_query_keeps_relevant_rows_inline_and_offloads_the_rest() {
+        // Relevance split is query-dependent (cache-hostile), so it runs only with the guard off.
         let resolver = "mcp__secondwind__resolve";
         let mut rows: Vec<String> = (0..40)
             .map(|i| format!(r#"{{"id":{i},"note":"shipping record {i} for delivery"}}"#))
@@ -550,7 +629,7 @@ mod tests {
         });
         age_past_hold(&mut body);
         let mut optimizer = Optimizer::default();
-        let stats = run(&mut body, &mut optimizer, Some(resolver));
+        let stats = run_unguarded(&mut body, &mut optimizer, Some(resolver));
 
         assert_eq!(stats.len(), 1);
         assert!(!stats[0].inline, "the split offloads the remainder");
@@ -568,7 +647,7 @@ mod tests {
     #[test]
     fn a_byte_exact_repeat_re_emits_identical_bytes() {
         let resolver = "mcp__secondwind__resolve";
-        let block = bulk();
+        let block = offloadable();
         let mut body = json!({
             "tools": [{"name": resolver, "description": "swload fetch"}],
             "messages": [
@@ -608,19 +687,19 @@ mod tests {
 
     #[test]
     fn a_fresh_block_is_held_whole_and_matures_to_offload_once_aged() {
+        // Guard OFF path: the legacy maturation still works when a host opts out of the cache guard.
         let resolver = "mcp__secondwind__resolve";
         let tool_msg = json!({"role": "user", "content": [
             {"type": "tool_result", "tool_use_id": "t1", "content": bulk()}
         ]});
 
-        // Fresh: the model still needs it this turn, so it stays whole rather than offload (which
-        // would force a resolve round-trip and, since it is verbatim, keep the cache prefix stable).
+        // Fresh: the model still needs it this turn, so it stays whole rather than offload.
         let mut fresh = json!({
             "tools": [{"name": resolver, "description": "swload fetch"}],
             "messages": [tool_msg.clone()]
         });
         let before = fresh.clone();
-        let stats = run(&mut fresh, &mut Optimizer::default(), Some(resolver));
+        let stats = run_unguarded(&mut fresh, &mut Optimizer::default(), Some(resolver));
         assert!(stats.is_empty(), "a fresh block is not offloaded");
         assert_eq!(fresh["messages"], before["messages"], "kept byte-for-byte");
 
@@ -630,18 +709,61 @@ mod tests {
             "messages": [tool_msg]
         });
         age_past_hold(&mut aged);
-        let stats = run(&mut aged, &mut Optimizer::default(), Some(resolver));
+        let stats = run_unguarded(&mut aged, &mut Optimizer::default(), Some(resolver));
         assert_eq!(stats.len(), 1);
         assert!(!stats[0].inline, "an aged block offloads");
     }
 
     #[test]
-    fn a_block_offloaded_by_an_aged_session_is_not_served_to_a_fresh_one() {
-        // The freeze is global by content, but age is per-session position: a block one session
-        // aged and offloaded must not be handed as an offload stub to another session where the
-        // same bytes are still fresh.
+    fn under_the_guard_a_block_is_decided_once_and_never_rewritten() {
+        // Guard on: a block's form is fixed on first sight and re-emitted byte-identical as it ages.
         let resolver = "mcp__secondwind__resolve";
-        let memory = FreezeState::default();
+        let freeze = FreezeState::default();
+        let mut opt = Optimizer::default();
+        let tool_msg = json!({"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "t1", "content": offloadable()}
+        ]});
+
+        let mut t1 = json!({
+            "tools": [{"name": resolver, "description": "swload fetch"}],
+            "messages": [tool_msg.clone()]
+        });
+        let s1 = rewrite(&mut t1, &mut opt, Some(resolver), &freeze);
+        assert!(
+            !s1[0].inline,
+            "decided on first sight (offloaded), not held for later maturation"
+        );
+        let wire1 = t1["messages"][0]["content"][0]["content"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(wire1.contains("<<swload:"));
+
+        // The same block, now aged by appended turns, must re-emit the identical bytes.
+        let mut t2 = json!({
+            "tools": [{"name": resolver, "description": "swload fetch"}],
+            "messages": [tool_msg]
+        });
+        age_past_hold(&mut t2);
+        rewrite(&mut t2, &mut opt, Some(resolver), &freeze);
+        let wire2 = t2["messages"][0]["content"][0]["content"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert_eq!(
+            wire1, wire2,
+            "same bytes across turns: no maturation, the cached prefix stays stable"
+        );
+    }
+
+    #[test]
+    fn a_block_offloaded_by_an_aged_session_is_not_served_to_a_fresh_one() {
+        // Guard OFF path: the freeze is global by content, but age is per-session position, so a block
+        // one session aged and offloaded must not be handed as an offload stub to another session
+        // where the same bytes are still fresh. (With the guard on, form is decided once and always
+        // re-emitted; there is no age-gated suppression.)
+        let resolver = "mcp__secondwind__resolve";
+        let memory = FreezeState::without_cache_guard();
         let tool_msg = json!({"role": "user", "content": [
             {"type": "tool_result", "tool_use_id": "t1", "content": bulk()}
         ]});
@@ -846,8 +968,10 @@ mod tests {
                 {"type": "tool_result", "tool_use_id": "t1", "content": raw}
             ]}]
         });
+        // Guard off + aged so the block reaches the thin-margin saving_usd gate, not the verbatim guard.
+        age_past_hold(&mut body);
         let mut optimizer = Optimizer::default().with_prose_shrinker(std::sync::Arc::new(DropTiny));
-        let _ = run(&mut body, &mut optimizer, Some(resolver));
+        let _ = run_unguarded(&mut body, &mut optimizer, Some(resolver));
 
         let content = body["messages"][0]["content"][0]["content"]
             .as_str()
@@ -857,6 +981,30 @@ mod tests {
             "wire grew from {} to {} bytes",
             raw.len(),
             content.len()
+        );
+    }
+
+    #[test]
+    fn under_the_guard_a_fresh_non_covering_block_stays_verbatim() {
+        // Default guard: a fresh block with no content-covering preview is kept verbatim (and booked),
+        // not offloaded into a resolve the model would need this turn.
+        let resolver = "mcp__secondwind__resolve";
+        let raw = "The service validates every request and logs it. ".repeat(40);
+        let mut body = json!({
+            "tools": [{"name": resolver, "description": "swload fetch"}],
+            "messages": [{"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "t1", "content": raw}
+            ]}]
+        });
+        let stats = run(&mut body, &mut Optimizer::default(), Some(resolver));
+        assert_eq!(stats.len(), 1);
+        assert_eq!(stats[0].kept_reason, "cache_guard_verbatim");
+        assert_eq!(
+            body["messages"][0]["content"][0]["content"]
+                .as_str()
+                .unwrap(),
+            raw,
+            "kept byte-for-byte"
         );
     }
 
@@ -936,7 +1084,7 @@ mod tests {
         });
         age_past_hold(&mut before);
         let mk = || Optimizer::default().with_prose_shrinker(std::sync::Arc::new(DropTiny));
-        let memory = FreezeState::default();
+        let memory = FreezeState::without_cache_guard();
 
         let mut body = before.clone();
         let stats = rewrite(&mut body, &mut mk(), Some(resolver), &memory);
