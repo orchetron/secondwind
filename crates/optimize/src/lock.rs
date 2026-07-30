@@ -22,7 +22,7 @@ pub fn encode(raw: &str) -> Option<String> {
     if records.len() < 3 {
         return None;
     }
-    let table = Nested.try_encode(&Value::Array(records))?.wire;
+    let table = Nested::default().try_encode(&Value::Array(records))?.wire;
     let wire = format!(
         "{HEADER} {} {}\n{preamble}{table}",
         trailing as u8,

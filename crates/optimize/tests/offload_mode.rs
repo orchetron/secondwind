@@ -19,7 +19,9 @@ fn record_array() -> String {
                 "id": i,
                 "state": if i % 2 == 0 { "open" } else { "closed" },
                 "title": format!("change number {i} to the pipeline"),
-                "body": "x".repeat(300),
+                // Keep this field unique per row: a fully constant body is now hoisted by
+                // Nested and intentionally stays inline under best-of-N selection.
+                "body": format!("{} record {i}", "x".repeat(300)),
             })
         })
         .collect();

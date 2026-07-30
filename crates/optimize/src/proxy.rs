@@ -501,12 +501,14 @@ mod tests {
         "x".repeat(20_000)
     }
 
-    // A records array whose long bodies the content-table preview truncates, so offload beats inline.
+    // Long per-row bodies exceed the readable preview cell limit, so the covering content table
+    // makes offload cheaper than any inline wire. (A constant body is now correctly hoisted by
+    // Nested and stays inline under best-of-N.)
     fn offloadable() -> String {
         let rows: Vec<String> = (0..60)
             .map(|i| {
                 format!(
-                    r#"{{"id":{i},"state":"{}","title":"record {i}","body":"{}"}}"#,
+                    r#"{{"id":{i},"state":"{}","title":"record {i}","body":"{} record {i}"}}"#,
                     if i % 2 == 0 { "open" } else { "closed" },
                     "long boilerplate detail text repeated for bulk ".repeat(8)
                 )
