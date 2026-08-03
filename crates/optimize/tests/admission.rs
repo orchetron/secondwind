@@ -21,7 +21,7 @@ fn big_object() -> String {
 }
 
 #[test]
-fn faithful_columnar_transform_is_admitted_and_smaller() {
+fn faithful_best_structured_transform_is_admitted_and_smaller() {
     let mut opt = Optimizer::default();
     match opt.compress_block(UNIFORM) {
         Outcome::Compressed {
@@ -30,7 +30,7 @@ fn faithful_columnar_transform_is_admitted_and_smaller() {
             certificate,
             saved_usd,
         } => {
-            assert_eq!(transform, "columnar");
+            assert_eq!(transform, "nested");
             assert!(certificate.wire_bytes < certificate.canonical_bytes);
             assert!(wire.contains("7001") && wire.contains("FAIL"));
             assert_eq!(certificate.clmh_before, certificate.clmh_after);

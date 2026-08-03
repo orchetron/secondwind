@@ -69,6 +69,9 @@ use offload::{OffloadStore, Store};
 use tokens::{ByteCounter, TokenCounter};
 use transform::{Encoded, TextProposer, Transform};
 
+type StructuredCandidate = (String, &'static str, Certificate, f64, usize);
+type StructuredSearch = (Option<StructuredCandidate>, Option<KeptReason>);
+
 pub enum Outcome {
     Compressed {
         wire: String,
@@ -134,6 +137,7 @@ const RELEVANCE_MAX_INLINE: usize = 24;
 
 const PROSE_SUMMARY_MIN_BYTES: usize = 1000;
 const PROSE_SUMMARY_FRACTION: f64 = 0.5;
+const BUILTIN_TRANSFORM_COUNT: usize = 4;
 
 pub struct Optimizer {
     transforms: Vec<Box<dyn Transform>>,
@@ -159,13 +163,9 @@ impl Default for Optimizer {
 
 impl Optimizer {
     pub fn new(gate: NetCostGate, zone: Zone) -> Self {
+        let counter: Arc<dyn TokenCounter> = Arc::new(ByteCounter);
         Self {
-            transforms: vec![
-                Box::new(Columnar::default()),
-                Box::new(Normalize),
-                Box::new(Nested),
-                Box::new(Doc),
-            ],
+            transforms: Self::built_in_transforms(counter.clone()),
             // Built-in text codecs are unreadable inline; only host-registered proposers ship here,
             // and a host owns its codec's readability. See compress_text.
             text_proposers: Vec::new(),
@@ -173,12 +173,23 @@ impl Optimizer {
             gate,
             zone,
             store: Arc::new(Store::default()),
-            counter: Arc::new(ByteCounter),
+            counter,
             embedder: Arc::new(distilled::DistilledEmbedder),
             prose_mode: false,
             prose_shrinker: None,
             offload_mode: OffloadMode::Auto,
         }
+    }
+
+    // Keep all built-in structured codecs on the same token counter. Custom transforms remain
+    // appended after this fixed prefix and retain their own construction/configuration.
+    fn built_in_transforms(counter: Arc<dyn TokenCounter>) -> Vec<Box<dyn Transform>> {
+        vec![
+            Box::new(Columnar::with_counter(counter.clone())),
+            Box::new(Normalize::with_counter(counter.clone())),
+            Box::new(Nested::with_counter(counter.clone())),
+            Box::new(Doc::with_counter(counter)),
+        ]
     }
 
     // Pick how recoverable eviction competes with inline: Off, Auto (cost model), or Always.
@@ -245,8 +256,14 @@ impl Optimizer {
     // Switch the pipeline from the default byte proxy to a real token counter, so codec selection
     // and every gate decision optimize token cost.
     pub fn with_counter(mut self, counter: Arc<dyn TokenCounter>) -> Self {
-        // Index 0 is the built-in readable table codec; rebuild only it so a with_transform addition survives.
-        self.transforms[0] = Box::new(Columnar::with_counter(counter.clone()));
+        // Rebuild the fixed built-in prefix without disturbing host transforms appended after it.
+        for (slot, transform) in Self::built_in_transforms(counter.clone())
+            .into_iter()
+            .enumerate()
+        {
+            self.transforms[slot] = transform;
+        }
+        debug_assert!(self.transforms.len() >= BUILTIN_TRANSFORM_COUNT);
         self.counter = counter;
         self
     }
@@ -424,21 +441,46 @@ impl Optimizer {
             };
         }
 
+        let (best, refusal) = self.best_structured(raw, &value);
+        if let Some((wire, id, certificate, usd, _)) = best {
+            return self.ship_inline_or_offload(raw, wire, id, certificate, usd);
+        }
+
+        let outcome = self.try_offload(raw);
+        if matches!(
+            &outcome,
+            Outcome::KeptVerbatim {
+                reason: KeptReason::NotApplicable
+            }
+        ) && let Some(reason) = refusal
+        {
+            Outcome::KeptVerbatim { reason }
+        } else {
+            outcome
+        }
+    }
+
+    // Best-of-N for structured codecs: prove, price, and detector-check every applicable wire,
+    // then use the actual configured token counter to pick the cheapest. Stable transform-id and
+    // byte-length ties keep the selected wire deterministic for prompt-cache reuse.
+    fn best_structured(&self, raw: &str, value: &Value) -> StructuredSearch {
+        let canonical = atom::canonicalize(value);
+        let mut best: Option<StructuredCandidate> = None;
+        let mut refusal = None;
         for transform in &self.transforms {
-            let Some(encoded) = transform.try_encode(&value) else {
+            let Some(encoded) = transform.try_encode(value) else {
                 continue;
             };
             let certificate = match admit(
-                &value,
+                value,
                 &encoded,
                 |v| transform.try_encode(v),
                 !transform.trusted(),
             ) {
                 Ok(certificate) => certificate,
-                Err(refusal) => {
-                    return Outcome::KeptVerbatim {
-                        reason: KeptReason::Refused(transform.id(), refusal),
-                    };
+                Err(reason) => {
+                    refusal.get_or_insert(KeptReason::Refused(transform.id(), reason));
+                    continue;
                 }
             };
             // Price the counterfactual against raw (what the model would be billed), not canonical,
@@ -450,24 +492,25 @@ impl Optimizer {
                 continue;
             };
 
-            if !detectorgate::detector_findings(&atom::canonicalize(&value), &encoded.wire)
-                .is_empty()
-            {
-                return Outcome::KeptVerbatim {
-                    reason: KeptReason::DetectorFired,
-                };
+            if !detectorgate::detector_findings(&canonical, &encoded.wire).is_empty() {
+                refusal.get_or_insert(KeptReason::DetectorFired);
+                continue;
             }
 
-            return self.ship_inline_or_offload(
-                raw,
-                encoded.wire,
-                transform.id(),
-                certificate,
-                usd,
-            );
+            let units = self.counter.count(&encoded.wire);
+            let id = transform.id();
+            let wire_bytes = encoded.wire.len();
+            let better = match &best {
+                Some((best_wire, best_id, _, _, best_units)) => {
+                    (units, id, wire_bytes) < (*best_units, *best_id, best_wire.len())
+                }
+                None => true,
+            };
+            if better {
+                best = Some((encoded.wire, id, certificate, usd, units));
+            }
         }
-
-        self.try_offload(raw)
+        (best, refusal)
     }
 
     // Readable inline text codecs ship first: grouped (grep by file, listings by directory) and tree

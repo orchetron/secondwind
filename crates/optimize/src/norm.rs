@@ -1,9 +1,11 @@
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use serde_json::{Map, Value};
 
 use crate::column::string_token;
 use crate::nested::{self, Nested};
+use crate::tokens::{ByteCounter, TokenCounter};
 use crate::transform::{Encoded, Transform};
 
 const HEADER: &str = "SWNORM";
@@ -12,7 +14,27 @@ const HEADER: &str = "SWNORM";
 // release file-lists) are pulled into side tables keyed by a detected unique field, so repeating
 // groups compress into their own table instead of a per-row json blob. The model reads it as a
 // foreign-key join, which it can do (unlike a positional join). Reversible; self-verified in admit.
-pub struct Normalize;
+pub struct Normalize {
+    counter: Arc<dyn TokenCounter>,
+}
+
+impl Default for Normalize {
+    fn default() -> Self {
+        Self {
+            counter: Arc::new(ByteCounter),
+        }
+    }
+}
+
+impl Normalize {
+    pub fn with_counter(counter: Arc<dyn TokenCounter>) -> Self {
+        Self { counter }
+    }
+
+    fn encode(&self, items: &[Value]) -> Option<String> {
+        encode_with_counter(items, self.counter.clone())
+    }
+}
 
 impl Transform for Normalize {
     fn id(&self) -> &'static str {
@@ -25,7 +47,7 @@ impl Transform for Normalize {
 
     fn try_encode(&self, value: &Value) -> Option<Encoded> {
         let items = value.as_array()?;
-        let wire = encode(items)?;
+        let wire = self.encode(items)?;
         let decoded = decode(&wire)?;
         if crate::atom::canonicalize(&decoded) != crate::atom::canonicalize(value) {
             return None;
@@ -89,6 +111,10 @@ fn pick_sidefk(rows: &[(Value, Value)]) -> String {
 }
 
 pub fn encode(items: &[Value]) -> Option<String> {
+    encode_with_counter(items, Arc::new(ByteCounter))
+}
+
+fn encode_with_counter(items: &[Value], counter: Arc<dyn TokenCounter>) -> Option<String> {
     if items.len() < 2 {
         return None;
     }
@@ -137,7 +163,9 @@ pub fn encode(items: &[Value]) -> Option<String> {
         return None;
     }
 
-    let main_wire = Nested.try_encode(&Value::Array(main))?.wire;
+    let main_wire = Nested::with_counter(counter.clone())
+        .try_encode(&Value::Array(main))?
+        .wire;
     let mut parts = vec![
         format!("{HEADER}\t{}\t{}", string_token(&fk), order.len()),
         format!("@main\t{}", main_wire.split('\n').count()),
@@ -154,7 +182,9 @@ pub fn encode(items: &[Value]) -> Option<String> {
                 Value::Object(r)
             })
             .collect();
-        let side_wire = Nested.try_encode(&Value::Array(side_records))?.wire;
+        let side_wire = Nested::with_counter(counter.clone())
+            .try_encode(&Value::Array(side_records))?
+            .wire;
         parts.push(format!(
             "@side\t{}\t{}\t{}\t{}",
             string_token(k),

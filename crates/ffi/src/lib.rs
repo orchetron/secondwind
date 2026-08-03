@@ -509,7 +509,7 @@ mod tests {
         let out: Value =
             serde_json::from_str(&rewrite_request(session, Some(request.as_bytes()))).unwrap();
         assert_eq!(out["stats"]["blocks_rewritten"], 1);
-        assert_eq!(out["stats"]["transforms"][0], "columnar");
+        assert_eq!(out["stats"]["transforms"][0], "nested");
         let tool = out["request"]["messages"][1]["content"].as_str().unwrap();
         assert!(tool.len() < ls.len(), "the tool output must shrink");
         assert_eq!(

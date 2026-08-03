@@ -1,6 +1,8 @@
 use serde_json::{Map, Value};
+use std::sync::Arc;
 
 use crate::column::string_token;
+use crate::tokens::{ByteCounter, TokenCounter};
 use crate::transform::{Encoded, Transform};
 
 const HEADER: &str = "SWNEST";
@@ -9,7 +11,25 @@ const SEP: char = '.';
 // Row-major readable table for nested/ragged record arrays: flatten scalar paths to dotted columns,
 // keep every value literal so the model reads it, union schema with an empty cell for an absent field.
 // A column that is present and identical in every record is stated once as a constant, not per row.
-pub struct Nested;
+pub struct Nested {
+    // Nested currently has one readable wire shape, but keeping the configured counter with it
+    // makes callers compose it consistently with the other structured codecs.
+    _counter: Arc<dyn TokenCounter>,
+}
+
+impl Default for Nested {
+    fn default() -> Self {
+        Self {
+            _counter: Arc::new(ByteCounter),
+        }
+    }
+}
+
+impl Nested {
+    pub fn with_counter(counter: Arc<dyn TokenCounter>) -> Self {
+        Self { _counter: counter }
+    }
+}
 
 impl Transform for Nested {
     fn id(&self) -> &'static str {
@@ -267,7 +287,7 @@ mod tests {
 
     fn round_trip(json: &str) {
         let value: Value = serde_json::from_str(json).unwrap();
-        let encoded = Nested.try_encode(&value).unwrap();
+        let encoded = Nested::default().try_encode(&value).unwrap();
         assert_eq!(
             decode(&encoded.wire).unwrap(),
             value,
@@ -302,7 +322,7 @@ mod tests {
             r#"[{"n":1,"repo":"cli/cli","kind":"pr"},{"n":2,"repo":"cli/cli","kind":"pr"}]"#,
         )
         .unwrap();
-        let wire = Nested.try_encode(&value).unwrap().wire;
+        let wire = Nested::default().try_encode(&value).unwrap().wire;
         assert!(
             wire.starts_with("SWNEST 2 2 1"),
             "two constants, one varying: {wire}"
@@ -314,13 +334,13 @@ mod tests {
     fn string_values_are_literal_and_readable() {
         let value: Value =
             serde_json::from_str(r#"[{"u":{"login":"alice"}},{"u":{"login":"bob"}}]"#).unwrap();
-        let wire = Nested.try_encode(&value).unwrap().wire;
+        let wire = Nested::default().try_encode(&value).unwrap().wire;
         assert!(wire.contains("alice") && wire.contains("bob") && !wire.contains("\"alice\""));
     }
 
     #[test]
     fn keys_with_the_separator_are_refused() {
         let value: Value = serde_json::from_str(r#"[{"a.b":1},{"a.b":2}]"#).unwrap();
-        assert!(Nested.try_encode(&value).is_none());
+        assert!(Nested::default().try_encode(&value).is_none());
     }
 }

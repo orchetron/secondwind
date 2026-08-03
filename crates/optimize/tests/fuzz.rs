@@ -452,7 +452,7 @@ fn doc_round_trips_or_refuses_on_random_documents() {
             obj.insert("list".into(), Value::Array(arr));
         }
         let value = Value::Object(obj);
-        if let Some(enc) = Doc.try_encode(&value) {
+        if let Some(enc) = Doc::default().try_encode(&value) {
             assert_eq!(
                 canonicalize(&doc_decode(&enc.wire).unwrap()),
                 canonicalize(&value),
@@ -482,7 +482,7 @@ fn nested_round_trips_or_refuses_on_random_object_arrays() {
             })
             .collect();
         let value = Value::Array(items);
-        if let Some(encoded) = Nested.try_encode(&value) {
+        if let Some(encoded) = Nested::default().try_encode(&value) {
             let decoded = nested_decode(&encoded.wire).expect("wire decodes");
             assert_eq!(
                 canonicalize(&decoded),

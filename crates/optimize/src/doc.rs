@@ -1,7 +1,10 @@
 use serde_json::{Map, Value};
+use std::sync::Arc;
 
 use crate::column::string_token;
 use crate::nested::{self, Nested};
+use crate::norm::Normalize;
+use crate::tokens::{ByteCounter, TokenCounter};
 use crate::transform::{Encoded, Transform};
 
 const HEADER: &str = "SWDOC";
@@ -10,7 +13,23 @@ const MAP_MIN: usize = 8;
 // Readable document codec for a top-level object: scalar fields stay literal, and each nested record
 // collection (array of objects, or a map of objects/scalars/arrays) becomes an embedded readable
 // table, so object-map responses (registries, lockfiles) compress inline instead of only offloading.
-pub struct Doc;
+pub struct Doc {
+    counter: Arc<dyn TokenCounter>,
+}
+
+impl Default for Doc {
+    fn default() -> Self {
+        Self {
+            counter: Arc::new(ByteCounter),
+        }
+    }
+}
+
+impl Doc {
+    pub fn with_counter(counter: Arc<dyn TokenCounter>) -> Self {
+        Self { counter }
+    }
+}
 
 impl Transform for Doc {
     fn id(&self) -> &'static str {
@@ -32,16 +51,27 @@ impl Transform for Doc {
         for (k, v) in obj {
             if let Some((shape, keycol, records)) = tablify(v) {
                 // Normalize (pull inner collections into side tables) when it beats a plain table.
-                let plain = Nested
+                let plain = Nested::with_counter(self.counter.clone())
                     .try_encode(&Value::Array(records.clone()))
                     .map(|e| e.wire);
-                let normed = crate::norm::encode(&records);
+                let normed = Normalize::with_counter(self.counter.clone())
+                    .try_encode(&Value::Array(records.clone()))
+                    .map(|e| e.wire);
                 let table = match (normed, plain) {
-                    (Some(a), Some(b)) => Some(if a.len() < b.len() { a } else { b }),
+                    (Some(a), Some(b)) => Some(
+                        if (self.counter.count(&a), a.len()) < (self.counter.count(&b), b.len()) {
+                            a
+                        } else {
+                            b
+                        },
+                    ),
                     (a, b) => a.or(b),
                 };
                 if let Some(tw) = table
-                    && tw.len() < serde_json::to_string(v).map(|s| s.len()).unwrap_or(0)
+                    && self.counter.count(&tw)
+                        < serde_json::to_string(v)
+                            .map(|s| self.counter.count(&s))
+                            .unwrap_or(0)
                 {
                     let nlines = tw.split('\n').count();
                     let kc = keycol.map(|c| string_token(&c)).unwrap_or_default();
@@ -193,10 +223,25 @@ fn refold(shape: char, keycol: Option<&str>, items: &[Value]) -> Option<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+
+    struct NormalizePreferred;
+
+    impl TokenCounter for NormalizePreferred {
+        fn count(&self, text: &str) -> usize {
+            if text.starts_with("SWNORM") {
+                1
+            } else if text.starts_with("SWNEST") {
+                100
+            } else {
+                text.len()
+            }
+        }
+    }
 
     fn round_trip(json: &str) {
         let value: Value = serde_json::from_str(json).unwrap();
-        if let Some(enc) = Doc.try_encode(&value) {
+        if let Some(enc) = Doc::default().try_encode(&value) {
             assert_eq!(decode(&enc.wire).unwrap(), value, "wire:\n{}", enc.wire);
         }
     }
@@ -211,7 +256,7 @@ mod tests {
     #[test]
     fn tablifies_a_map_of_objects_and_round_trips() {
         let value: Value = serde_json::from_str(&map_of_objects(10)).unwrap();
-        let enc = Doc.try_encode(&value).unwrap();
+        let enc = Doc::default().try_encode(&value).unwrap();
         assert!(enc.wire.contains("SWDOC") && enc.wire.contains("index.js"));
         assert_eq!(decode(&enc.wire).unwrap(), value);
     }
@@ -225,6 +270,44 @@ mod tests {
             r#"{{"packages":[{}],"count":10}}"#,
             rows.join(",")
         ));
+    }
+
+    #[test]
+    fn counter_selects_the_embedded_table_and_admission_gate() {
+        let packages: Vec<Value> = (0..2)
+            .map(|i| {
+                serde_json::json!({
+                    "id": i,
+                    "name": format!("pkg-{i}"),
+                    "dependencies": [{"name": format!("dep-{i}"), "req": "^1"}],
+                })
+            })
+            .collect();
+        let value = serde_json::json!({"packages": packages});
+        let records = value["packages"].as_array().unwrap().clone();
+        let plain = Nested::default()
+            .try_encode(&Value::Array(records.clone()))
+            .unwrap()
+            .wire;
+        let normed = Normalize::default()
+            .try_encode(&Value::Array(records))
+            .unwrap()
+            .wire;
+        assert!(
+            normed.len() > plain.len(),
+            "the fixture must diverge from a byte-length choice: norm={} nested={}",
+            normed.len(),
+            plain.len()
+        );
+
+        let wire = Doc::with_counter(Arc::new(NormalizePreferred))
+            .try_encode(&value)
+            .unwrap()
+            .wire;
+        assert!(
+            wire.contains("SWNORM"),
+            "Doc must use its counter for both table selection and table admission"
+        );
     }
 
     #[test]
@@ -242,6 +325,6 @@ mod tests {
     #[test]
     fn refuses_a_plain_struct_with_no_collection() {
         let value: Value = serde_json::from_str(r#"{"name":"pkg","version":"1.0.0"}"#).unwrap();
-        assert!(Doc.try_encode(&value).is_none());
+        assert!(Doc::default().try_encode(&value).is_none());
     }
 }

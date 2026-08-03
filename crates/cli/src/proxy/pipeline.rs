@@ -214,7 +214,7 @@ mod tests {
             "[{}]",
             (0..60)
                 .map(|i| format!(
-                    r#"{{"id":{i},"state":"open","title":"r{i}","body":"{}"}}"#,
+                    r#"{{"id":{i},"state":"open","title":"r{i}","body":"{} record {i}"}}"#,
                     "long boilerplate detail text repeated for bulk ".repeat(8)
                 ))
                 .collect::<Vec<_>>()
