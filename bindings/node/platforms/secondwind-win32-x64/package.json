@@ -1,6 +1,6 @@
 {
   "name": "@orchetron/secondwind-win32-x64",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "description": "secondwind native library for win32-x64",
   "license": "Apache-2.0",
   "os": [
