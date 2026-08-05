@@ -774,12 +774,18 @@ html,body{margin:0; background:#0B0D13;}
       // teal boundary marker at the sent/reclaimed divide
       s+='<g class="'+vl+'"><circle cx="234" cy="'+yFill+'" r="3.4" fill="#26B6CE" stroke="#0B0D13" stroke-width="1"/></g>';
       // right-side labels, all from data
+      // The "reclaimed" cluster (bandMid..bandMid+30) only has room when the band above the
+      // fill line is tall enough; below that, bandMid's clamp degenerates and it collides with
+      // the "sent" cluster anchored at yFill. Hide it rather than overlap unreadable text.
+      var showReclaimed = bandH >= 122;
       s+='<g class="'+vl+'">';
       s+='<text x="244" y="49" fill="#98A0B0" font-size="10.5" letter-spacing="0.06em">RAW SESSION</text>';
       s+='<text class="mono-t" x="244" y="65" fill="#EEF1F7" font-size="12.5">'+fmtTok(raw)+'</text>';
-      s+='<text class="mono-t" x="244" y="'+bandMid+'" fill="#829CF6" font-size="22" letter-spacing="-0.02em">+'+fmtTok(reclaimed)+'</text>';
-      s+='<text x="244" y="'+(bandMid+16)+'" fill="#98A0B0" font-size="11">tokens reclaimed</text>';
-      s+='<text x="244" y="'+(bandMid+30)+'" fill="#26B6CE" font-size="10.5" letter-spacing="0.04em">100% RECOVERABLE</text>';
+      if(showReclaimed){
+        s+='<text class="mono-t" x="244" y="'+bandMid+'" fill="#829CF6" font-size="22" letter-spacing="-0.02em">+'+fmtTok(reclaimed)+'</text>';
+        s+='<text x="244" y="'+(bandMid+16)+'" fill="#98A0B0" font-size="11">tokens reclaimed</text>';
+        s+='<text x="244" y="'+(bandMid+30)+'" fill="#26B6CE" font-size="10.5" letter-spacing="0.04em">100% RECOVERABLE</text>';
+      }
       s+='<text x="244" y="'+(yFill-2)+'" fill="#26B6CE" font-size="10.5" letter-spacing="0.06em">SECOND WIND HOLDS</text>';
       s+='<text class="mono-t" x="244" y="'+(yFill+13)+'" fill="#EEF1F7" font-size="13">'+fmtTok(sent)+'</text>';
       s+='<text x="244" y="'+(yFill+27)+'" fill="#5B6472" font-size="10">'+pctRaw+'% of raw context</text>';
