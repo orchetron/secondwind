@@ -112,7 +112,7 @@ enum Command {
             short = 'c',
             value_name = "SCRIPT",
             conflicts_with = "command",
-            help = "Run SCRIPT through the shell instead of an argv"
+            help = "Run SCRIPT through the shell (bash, else sh; sh on Windows; SECONDWIND_SHELL overrides)"
         )]
         script: Option<String>,
         #[arg(
@@ -893,8 +893,16 @@ fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
-fn exec_shell() -> String {
-    std::env::var("SECONDWIND_SHELL").unwrap_or_else(|_| "bash".to_string())
+// On Windows the `bash` on PATH is usually the WSL launcher, so Git's `sh` is the default there.
+fn shells() -> Vec<String> {
+    if let Ok(shell) = std::env::var("SECONDWIND_SHELL") {
+        return vec![shell];
+    }
+    if cfg!(windows) {
+        vec!["sh".to_string()]
+    } else {
+        vec!["bash".to_string(), "sh".to_string()]
+    }
 }
 
 fn child_exit(status: std::process::ExitStatus) -> ExitCode {
@@ -915,25 +923,41 @@ fn exec(home: &Path, script: Option<&str>, argv: &[String]) -> ExitCode {
     use secondwind_optimize::{Optimizer, Outcome};
     use std::process::Stdio;
 
-    let mut child = match script {
-        Some(script) => {
-            let mut child = std::process::Command::new(exec_shell());
-            child.arg("-c").arg(script);
-            child
-        }
+    let commands: Vec<std::process::Command> = match script {
+        Some(script) => shells()
+            .into_iter()
+            .map(|shell| {
+                let mut child = std::process::Command::new(shell);
+                child.arg("-c").arg(script);
+                child
+            })
+            .collect(),
         None => {
             let mut child = std::process::Command::new(&argv[0]);
             child.args(&argv[1..]);
-            child
+            vec![child]
         }
     };
-    let output = match child.stderr(Stdio::inherit()).output() {
-        Ok(output) => output,
-        Err(err) => {
-            let shown = script.map_or_else(|| argv.join(" "), str::to_string);
-            eprintln!("secondwind exec: {shown}: {err}");
-            return ExitCode::from(127);
+    let mut output = None;
+    let mut failure = None;
+    for mut child in commands {
+        match child.stderr(Stdio::inherit()).output() {
+            Ok(ran) => {
+                output = Some(ran);
+                break;
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => failure = Some(err),
+            Err(err) => {
+                failure = Some(err);
+                break;
+            }
         }
+    }
+    let Some(output) = output else {
+        let shown = script.map_or_else(|| argv.join(" "), str::to_string);
+        let err = failure.expect("a command that did not run failed");
+        eprintln!("secondwind exec: {shown}: {err}");
+        return ExitCode::from(127);
     };
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     let original = stdout.len();
