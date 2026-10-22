@@ -322,16 +322,22 @@ fn touch(path: &Path) {
     let _ = filetime::set_file_mtime(path, filetime::FileTime::now());
 }
 
+// Only a 16-hex id is a marker: it is the content hash, and it is joined onto the store path.
 fn marker_id(marker: &str) -> Option<&str> {
-    marker.strip_prefix("<<swload:")?.strip_suffix(">>")
+    let id = marker.strip_prefix("<<swload:")?.strip_suffix(">>")?;
+    well_formed_id(id).then_some(id)
 }
 
-// The 16-hex offload marker id embedded in a stub (which also carries a preview), if well-formed.
+fn well_formed_id(id: &str) -> bool {
+    id.len() == 16 && id.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+// The offload marker id embedded in a stub (which also carries a preview), if well-formed.
 pub fn embedded_marker_id(text: &str) -> Option<&str> {
     let start = text.find("<<swload:")? + "<<swload:".len();
     let end = text[start..].find(">>")? + start;
     let id = &text[start..end];
-    (id.len() == 16 && id.bytes().all(|b| b.is_ascii_hexdigit())).then_some(id)
+    well_formed_id(id).then_some(id)
 }
 
 // Preview size scales with the block; this fraction is the one savings-vs-preview knob.
@@ -820,6 +826,51 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_marker_that_is_not_a_hex_id_never_touches_the_disk() {
+        use std::time::Duration;
+        let root = std::env::temp_dir().join(format!("sw_offload_escape_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let store_dir = root.join("store");
+        let victim = root.join("victim.blob");
+        std::fs::create_dir_all(&store_dir).unwrap();
+        std::fs::write(&victim, "canary").unwrap();
+        let stale = filetime::FileTime::from_unix_time(0, 0);
+        filetime::set_file_mtime(&victim, stale).unwrap();
+
+        let store = Store::persistent(&store_dir, Duration::from_secs(1));
+        for marker in [
+            "<<swload:../victim>>",
+            "<<swload:/etc/passwd>>",
+            "<<swload:0123456789abcdeg>>",
+            "<<swload:0123456789abcde>>",
+            "<<swload:>>",
+        ] {
+            assert_eq!(store.resolve(marker), None, "{marker}");
+            assert_eq!(marker_id(marker), None, "{marker}");
+        }
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "canary");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_callback_store_never_sees_a_malformed_id() {
+        use std::sync::{Arc, Mutex};
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let log = seen.clone();
+        let store = CallbackStore::new(
+            |_, _| true,
+            move |id| {
+                log.lock().unwrap().push(id.to_string());
+                None
+            },
+        );
+        assert_eq!(store.resolve("<<swload:../secret>>"), None);
+        assert_eq!(store.resolve("<<swload:0123456789abcdef>>"), None);
+        assert_eq!(*seen.lock().unwrap(), vec!["0123456789abcdef".to_string()]);
     }
 
     #[test]

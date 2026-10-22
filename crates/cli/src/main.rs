@@ -108,7 +108,18 @@ enum Command {
         about = "Run a command and losslessly compress its output, the way a shell filter would"
     )]
     Exec {
-        #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
+        #[arg(
+            short = 'c',
+            value_name = "SCRIPT",
+            conflicts_with = "command",
+            help = "Run SCRIPT through the shell (bash, else sh; sh on Windows; SECONDWIND_SHELL overrides)"
+        )]
+        script: Option<String>,
+        #[arg(
+            trailing_var_arg = true,
+            allow_hyphen_values = true,
+            required_unless_present = "script"
+        )]
         command: Vec<String>,
     },
     #[command(about = "Serve the optimizer over MCP (stdio): optimize and resolve tools")]
@@ -286,7 +297,9 @@ fn main() -> ExitCode {
         Some(Command::Verify { wire, certificate }) => return verify(&wire, &certificate),
         Some(Command::ReopenRate { limit }) => return reopen_rate(&home, limit),
         Some(Command::CacheSavings { limit }) => return cache_savings(&home, limit),
-        Some(Command::Exec { command }) => return exec(&home, &command),
+        Some(Command::Exec { script, command }) => {
+            return exec(&home, script.as_deref(), &command);
+        }
         Some(Command::Mcp) => return mcp::serve(&home),
         Some(Command::Serve {
             listen,
@@ -840,9 +853,10 @@ const HOOK_SETUP: &str = r#"Add this to .claude/settings.json to compress Bash o
     }
   }
 
-Then Bash commands run through `secondwind exec`, keeping every value present or
-recoverable. Verify the rewrite lands in a live session; if the field name differs
-in your build, it is a one-line change in `secondwind hook`."#;
+Then Bash commands run through `secondwind exec -c`, keeping every value present or
+recoverable. The command runs in a child shell, so a `cd` or variable assignment in it
+lasts only for that command. Verify the rewrite lands in a live session; if the field
+name differs in your build, it is a one-line change in `secondwind hook`."#;
 
 fn hook() -> ExitCode {
     use std::io::Read;
@@ -866,7 +880,7 @@ fn hook() -> ExitCode {
             "hookSpecificOutput": {
                 "hookEventName": "PreToolUse",
                 "permissionDecision": "allow",
-                "updatedInput": { "command": format!("secondwind exec {command}") }
+                "updatedInput": { "command": format!("secondwind exec -c {}", shell_quote(command)) }
             }
         });
         println!("{rewrite}");
@@ -874,22 +888,77 @@ fn hook() -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn exec(home: &Path, command: &[String]) -> ExitCode {
-    use secondwind_optimize::{Optimizer, Outcome};
+// Single-quoted for POSIX shells, so the wrapped command survives the outer parse intact.
+fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
 
-    let joined = command.join(" ");
-    let output = match std::process::Command::new("sh")
-        .arg("-c")
-        .arg(&joined)
-        .output()
+// On Windows the `bash` on PATH is usually the WSL launcher, so Git's `sh` is the default there.
+fn shells() -> Vec<String> {
+    if let Ok(shell) = std::env::var("SECONDWIND_SHELL") {
+        return vec![shell];
+    }
+    if cfg!(windows) {
+        vec!["sh".to_string()]
+    } else {
+        vec!["bash".to_string(), "sh".to_string()]
+    }
+}
+
+fn child_exit(status: std::process::ExitStatus) -> ExitCode {
+    if let Some(code) = status.code() {
+        return ExitCode::from(code.clamp(0, 255) as u8);
+    }
+    #[cfg(unix)]
     {
-        Ok(output) => output,
-        Err(err) => {
-            eprintln!("secondwind exec: {joined}: {err}");
-            return ExitCode::FAILURE;
+        use std::os::unix::process::ExitStatusExt;
+        if let Some(signal) = status.signal() {
+            return ExitCode::from(128 + signal as u8);
+        }
+    }
+    ExitCode::FAILURE
+}
+
+fn exec(home: &Path, script: Option<&str>, argv: &[String]) -> ExitCode {
+    use secondwind_optimize::{Optimizer, Outcome};
+    use std::process::Stdio;
+
+    let commands: Vec<std::process::Command> = match script {
+        Some(script) => shells()
+            .into_iter()
+            .map(|shell| {
+                let mut child = std::process::Command::new(shell);
+                child.arg("-c").arg(script);
+                child
+            })
+            .collect(),
+        None => {
+            let mut child = std::process::Command::new(&argv[0]);
+            child.args(&argv[1..]);
+            vec![child]
         }
     };
-    eprint!("{}", String::from_utf8_lossy(&output.stderr));
+    let mut output = None;
+    let mut failure = None;
+    for mut child in commands {
+        match child.stderr(Stdio::inherit()).output() {
+            Ok(ran) => {
+                output = Some(ran);
+                break;
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => failure = Some(err),
+            Err(err) => {
+                failure = Some(err);
+                break;
+            }
+        }
+    }
+    let Some(output) = output else {
+        let shown = script.map_or_else(|| argv.join(" "), str::to_string);
+        let err = failure.expect("a command that did not run failed");
+        eprintln!("secondwind exec: {shown}: {err}");
+        return ExitCode::from(127);
+    };
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     let original = stdout.len();
 
@@ -954,11 +1023,7 @@ fn exec(home: &Path, command: &[String]) -> ExitCode {
         effective.len()
     );
 
-    if output.status.success() {
-        ExitCode::SUCCESS
-    } else {
-        ExitCode::FAILURE
-    }
+    child_exit(output.status)
 }
 
 // Pricing model for surfaces that name none in-request (exec, mcp): SECONDWIND_MODEL
