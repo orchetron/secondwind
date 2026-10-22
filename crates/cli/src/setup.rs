@@ -21,6 +21,9 @@ pub fn run(
     if let Some(name) = target {
         return route_agent(home, name, tool, off, plan);
     }
+    if off {
+        return unwire_claude(home);
+    }
     let ok = "\u{2713}";
     let mut failed = false;
 
@@ -552,6 +555,91 @@ fn install_hook(settings: &Path) -> Result<bool, String> {
     Ok(true)
 }
 
+fn unwire_claude(home: &Path) -> ExitCode {
+    let ok = "\u{2713}";
+    let mut failed = false;
+
+    let config = home.join(".claude.json");
+    match unregister_mcp(&config) {
+        Ok(true) => println!(
+            "  {ok} mcp   removed `secondwind` from {}",
+            config.display()
+        ),
+        Ok(false) => println!("  - mcp   nothing registered in {}", config.display()),
+        Err(err) => {
+            eprintln!("  \u{2717} mcp   {err}");
+            failed = true;
+        }
+    }
+
+    let settings = home.join(".claude").join("settings.json");
+    match uninstall_hook(&settings) {
+        Ok(true) => println!("  {ok} hook  removed from {}", settings.display()),
+        Ok(false) => println!("  - hook  not installed in {}", settings.display()),
+        Err(err) => {
+            eprintln!("  \u{2717} hook  {err}");
+            failed = true;
+        }
+    }
+
+    println!();
+    println!("restart Claude Code to drop the tools.");
+    if failed {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    }
+}
+
+// Removes only the secondwind command from each PreToolUse entry, so hooks a user grouped
+// alongside it survive; emptied entries and containers go with it.
+fn uninstall_hook(settings: &Path) -> Result<bool, String> {
+    let Ok(raw) = std::fs::read_to_string(settings) else {
+        return Ok(false);
+    };
+    let mut root: Value = serde_json::from_str(&raw).map_err(|e| {
+        format!(
+            "{} does not parse, not touching it: {e}",
+            settings.display()
+        )
+    })?;
+    let Some(hooks) = root.get_mut("hooks").and_then(Value::as_object_mut) else {
+        return Ok(false);
+    };
+    let Some(list) = hooks.get_mut("PreToolUse").and_then(Value::as_array_mut) else {
+        return Ok(false);
+    };
+    let is_ours = |hook: &Value| {
+        hook["command"]
+            .as_str()
+            .is_some_and(|c| c.trim_start().starts_with("secondwind hook"))
+    };
+    let before = list.clone();
+    for entry in list.iter_mut() {
+        if let Some(cmds) = entry.get_mut("hooks").and_then(Value::as_array_mut) {
+            cmds.retain(|hook| !is_ours(hook));
+        }
+    }
+    list.retain(|entry| {
+        entry
+            .get("hooks")
+            .and_then(Value::as_array)
+            .is_none_or(|cmds| !cmds.is_empty())
+    });
+    if *list == before {
+        return Ok(false);
+    }
+    if list.is_empty() {
+        hooks.remove("PreToolUse");
+    }
+    if hooks.is_empty() {
+        root.as_object_mut()
+            .expect("checked object")
+            .remove("hooks");
+    }
+    save(settings, &root).map(|()| true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -711,5 +799,53 @@ mod tests {
         let root: Value =
             serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
         assert_eq!(root["hooks"]["PreToolUse"][0]["matcher"], "Bash");
+    }
+
+    #[test]
+    fn setup_off_removes_the_mcp_server_and_the_hook() {
+        let dir = scratch("off");
+        let config = dir.join(".claude.json");
+        let settings = dir.join(".claude").join("settings.json");
+        std::fs::write(&config, r#"{"mcpServers":{"other":{"command":"x"}}}"#).unwrap();
+        assert!(register_mcp(&config, &dir).unwrap());
+        assert!(install_hook(&settings).unwrap());
+
+        let _ = run(&dir, false, None, false, true, false);
+
+        let root: Value = serde_json::from_str(&std::fs::read_to_string(&config).unwrap()).unwrap();
+        assert!(root["mcpServers"].get("secondwind").is_none());
+        assert_eq!(root["mcpServers"]["other"]["command"], "x");
+        let root: Value =
+            serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
+        assert!(root.get("hooks").is_none(), "emptied containers are pruned");
+
+        assert!(
+            !unregister_mcp(&config).unwrap(),
+            "removing again is a no-op"
+        );
+        assert!(!uninstall_hook(&settings).unwrap());
+    }
+
+    #[test]
+    fn uninstall_hook_keeps_hooks_grouped_with_ours() {
+        let dir = scratch("off-grouped");
+        let settings = dir.join("settings.json");
+        std::fs::write(
+            &settings,
+            r#"{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[
+                {"type":"command","command":"secondwind hook"},
+                {"type":"command","command":"my-linter"}
+            ]}],"Stop":[{"hooks":[{"type":"command","command":"notify"}]}]}}"#,
+        )
+        .unwrap();
+
+        assert!(uninstall_hook(&settings).unwrap());
+
+        let root: Value =
+            serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
+        let cmds = root["hooks"]["PreToolUse"][0]["hooks"].as_array().unwrap();
+        assert_eq!(cmds.len(), 1);
+        assert_eq!(cmds[0]["command"], "my-linter");
+        assert_eq!(root["hooks"]["Stop"][0]["hooks"][0]["command"], "notify");
     }
 }
