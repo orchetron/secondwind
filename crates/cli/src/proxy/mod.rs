@@ -554,16 +554,22 @@ fn receipt(home: &Path, since_ms: u64) {
         return;
     }
     let summary = events::summarize(&session, 0);
-    let saved_tokens = summary.input_tokens.saturating_sub(summary.output_tokens);
+    let saved_tokens = summary.net_tokens;
     let pct = if summary.input_tokens == 0 {
         0.0
     } else {
         100.0 * saved_tokens as f64 / summary.input_tokens as f64
     };
     eprintln!(
-        "secondwind receipt: {} blocks, {saved_tokens} tokens saved ({pct:.1}%), {}/{} verified lossless",
+        "secondwind receipt: {} blocks, {saved_tokens} tokens saved net ({pct:.1}%), {}/{} verified lossless",
         summary.blocks, summary.verified, summary.blocks
     );
+    if summary.reopens > 0 {
+        eprintln!(
+            "secondwind reopened: {} resolves handed {} tokens back into context",
+            summary.reopens, summary.reopened_tokens
+        );
+    }
     // The refusal side of the trail: blocks the gate saw but chose to leave verbatim, and why.
     if summary.kept > 0 {
         let reasons: Vec<String> = summary

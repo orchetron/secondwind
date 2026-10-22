@@ -1070,6 +1070,7 @@ fn record_event(
             model: model.to_string(),
             platform: surface.to_string(),
             tenant: String::new(),
+            reopened_tokens: 0,
             kept_reason: String::new(),
             req_id: String::new(),
         },

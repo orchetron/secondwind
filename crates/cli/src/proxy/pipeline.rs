@@ -128,6 +128,7 @@ fn shape_blocking(state: &AppState, platform: &str, tenant: &str, body: &[u8]) -
                 tenant: tenant.to_string(),
                 kept_reason: block.kept_reason,
                 req_id: req_id.clone(),
+                reopened_tokens: 0,
             },
         );
     }

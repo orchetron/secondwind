@@ -43,6 +43,9 @@ pub struct Event {
     // Correlation id shared by every block booked for one request, so a request's decisions join up.
     #[serde(default)]
     pub req_id: String,
+    // Tokens a resolve handed back into context; set only on a `resolve` event.
+    #[serde(default)]
+    pub reopened_tokens: u64,
 }
 
 pub fn now_ms() -> u64 {
@@ -106,6 +109,10 @@ pub struct Summary {
     pub verified: u64,
     pub input_tokens: u64,
     pub output_tokens: u64,
+    // Resolves hand blocks back into context; net = input - output - reopened.
+    pub reopens: u64,
+    pub reopened_tokens: u64,
+    pub net_tokens: u64,
     #[serde(skip)]
     pub saved_usd: f64,
     pub by_transform: BTreeMap<String, u64>,
@@ -175,57 +182,63 @@ pub fn summarize(events: &[Event], tz_offset_min: i64) -> Summary {
                 .or_insert(0) += 1;
             continue;
         }
-        // Count each block's content once: a byte-identical block (same certificate) resent after a
-        // restart re-books an event, so dedup by cert to match "never counted again on a re-read".
-        if !event.cert.is_empty() && !seen_certs.insert(event.cert.clone()) {
-            continue;
-        }
-        summary.blocks += 1;
-        if event.verified {
-            summary.verified += 1;
-        }
-        if event.inline {
-            summary.inline += 1;
+        let delta: i64 = if event.transform == "resolve" {
+            summary.reopens += 1;
+            summary.reopened_tokens += event.reopened_tokens;
+            -(event.reopened_tokens as i64)
         } else {
-            summary.offloaded += 1;
-        }
-        summary.input_tokens += event.input_tokens;
-        summary.output_tokens += event.output_tokens;
-        summary.saved_usd += event.saved_usd;
-        *summary
-            .by_transform
-            .entry(event.transform.clone())
-            .or_insert(0) += 1;
-        *summary
-            .transform_saved
-            .entry(event.transform.clone())
-            .or_insert(0) += event.input_tokens.saturating_sub(event.output_tokens);
-        *summary.by_surface.entry(event.surface.clone()).or_insert(0) += 1;
-        if !event.model.is_empty() {
-            *summary.by_model.entry(event.model.clone()).or_insert(0) += 1;
-        }
-        if !event.platform.is_empty() {
+            // Count each block's content once: a byte-identical block (same certificate) resent after
+            // a restart re-books an event, so dedup by cert to match "never counted again on a re-read".
+            if !event.cert.is_empty() && !seen_certs.insert(event.cert.clone()) {
+                continue;
+            }
+            summary.blocks += 1;
+            if event.verified {
+                summary.verified += 1;
+            }
+            if event.inline {
+                summary.inline += 1;
+            } else {
+                summary.offloaded += 1;
+            }
+            summary.input_tokens += event.input_tokens;
+            summary.output_tokens += event.output_tokens;
+            summary.saved_usd += event.saved_usd;
             *summary
-                .by_platform
-                .entry(event.platform.clone())
+                .by_transform
+                .entry(event.transform.clone())
                 .or_insert(0) += 1;
-        }
-        let removed = event.input_tokens.saturating_sub(event.output_tokens);
+            *summary
+                .transform_saved
+                .entry(event.transform.clone())
+                .or_insert(0) += event.input_tokens.saturating_sub(event.output_tokens);
+            *summary.by_surface.entry(event.surface.clone()).or_insert(0) += 1;
+            if !event.model.is_empty() {
+                *summary.by_model.entry(event.model.clone()).or_insert(0) += 1;
+            }
+            if !event.platform.is_empty() {
+                *summary
+                    .by_platform
+                    .entry(event.platform.clone())
+                    .or_insert(0) += 1;
+            }
+            event.input_tokens.saturating_sub(event.output_tokens) as i64
+        };
         let at = event.at_ms as i64;
         if now.saturating_sub(event.at_ms) <= 3_600_000 {
-            summary.saved_hour += removed;
+            summary.saved_hour = add(summary.saved_hour, delta);
         }
         if at >= today_start {
-            summary.saved_today += removed;
+            summary.saved_today = add(summary.saved_today, delta);
         }
         if at >= week_start {
-            summary.saved_week += removed;
+            summary.saved_week = add(summary.saved_week, delta);
         }
         if at >= month_start {
-            summary.saved_month += removed;
+            summary.saved_month = add(summary.saved_month, delta);
         }
         cumulative += event.saved_usd;
-        cumulative_tokens += event.input_tokens.saturating_sub(event.output_tokens);
+        cumulative_tokens = add(cumulative_tokens, delta);
         full_curve.push(Point {
             at_ms: event.at_ms,
             cumulative_usd: cumulative,
@@ -234,9 +247,17 @@ pub fn summarize(events: &[Event], tz_offset_min: i64) -> Summary {
     }
 
     summary.seen = summary.blocks + summary.kept;
+    summary.net_tokens = add(
+        summary.input_tokens.saturating_sub(summary.output_tokens),
+        -(summary.reopened_tokens as i64),
+    );
     summary.recent = events.iter().rev().take(RECENT).cloned().collect();
     summary.curve = downsample(full_curve);
     summary
+}
+
+fn add(total: u64, delta: i64) -> u64 {
+    (total as i64 + delta).max(0) as u64
 }
 
 // Keep the newest point exact, thin older ones by stride: bounded curve that never
@@ -301,6 +322,34 @@ mod tests {
             "a byte-identical resent block counts once"
         );
         assert_eq!(summary.input_tokens, 100);
+    }
+
+    #[test]
+    fn a_resolve_books_its_tokens_against_the_savings() {
+        let offload = Event {
+            transform: "offload".into(),
+            input_tokens: 1000,
+            output_tokens: 50,
+            verified: true,
+            cert: "c1".into(),
+            ..Default::default()
+        };
+        let resolve = Event {
+            transform: "resolve".into(),
+            reopened_tokens: 1000,
+            ..Default::default()
+        };
+        let summary = summarize(&[offload.clone(), resolve.clone(), resolve], 0);
+        assert_eq!(summary.blocks, 1, "a resolve is not a block");
+        assert_eq!(summary.reopens, 2);
+        assert_eq!(summary.reopened_tokens, 2000);
+        assert_eq!(summary.input_tokens, 1000);
+        assert_eq!(summary.output_tokens, 50);
+        assert_eq!(summary.net_tokens, 0, "net never goes below zero");
+        assert_eq!(summary.curve.last().unwrap().cumulative_tokens, 0);
+
+        let summary = summarize(&[offload], 0);
+        assert_eq!(summary.net_tokens, 950);
     }
 
     #[test]

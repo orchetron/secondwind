@@ -156,6 +156,7 @@ fn handle_call(
                         tenant: String::new(),
                         kept_reason: String::new(),
                         req_id: String::new(),
+                        reopened_tokens: 0,
                     },
                 );
             }
@@ -165,7 +166,21 @@ fn handle_call(
             let marker = args["marker"].as_str().unwrap_or("");
             let select = args["select"].as_str().unwrap_or("");
             match optimizer.resolve_selected(marker, select) {
-                Some(body) => result(id, content(&body)),
+                Some(body) => {
+                    events::record(
+                        home,
+                        &events::Event {
+                            at_ms: events::now_ms(),
+                            surface: "mcp".into(),
+                            transform: "resolve".into(),
+                            reopened_tokens: counter.count(&body) as u64,
+                            model: optimizer.model().to_string(),
+                            platform: "mcp".into(),
+                            ..Default::default()
+                        },
+                    );
+                    result(id, content(&body))
+                }
                 None => result(
                     id,
                     error_content("marker not found, expired, or selector matched nothing"),
