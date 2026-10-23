@@ -1,5 +1,48 @@
 # Changelog
 
+## v0.5.0
+
+### Upgrade notes
+
+- **The Bash hook is retired.** Claude Code checks permission rules against the command a
+  PreToolUse hook returns, and the hook rewrote every Bash command to `secondwind exec -c '...'`
+  while answering "allow", so Bash deny rules stopped matching and prompts were skipped. `secondwind
+  hook` now passes every command through unchanged, `setup --hook` installs nothing, plain
+  `secondwind setup` removes a hook an earlier version installed, and `secondwind check` warns while
+  one is still there. Use the Claude Code mod instead (below).
+- **Offloading depends on where a block came from.** When a caller names the tool and command (MCP
+  `optimize` takes optional `tool` and `command`; `exec` uses its own), output that is usually read
+  in full, such as a large `cat` or `Read`, stays in view and only inline codecs apply. Callers that
+  name nothing behave as before.
+- **Figures read from recorded sessions drop.** The trace reader counted images and PDFs as base64
+  text and wrapped every tool result in JSON the model never saw. On the author's sessions that
+  made tool output look seven times larger than it is, so `cache-savings` and the audit report less.
+
+### Security
+
+- The retired Bash hook let Bash commands run without the user's deny rules or prompts (above).
+
+### Added
+
+- `secondwind eval` replays your recorded sessions through the optimizer and reports, per tool and
+  command, what was offloaded, how often the model later needed it, net tokens, and whether every
+  block came back intact. `--learn` fits reopen rates on half your sessions, replays the other half
+  with and without the gate, and writes `~/.secondwind/policy.json`; `--gate` and `--query` replay
+  with the gate or with your latest message as the query; `--blocks` writes one line per result.
+- A reopen policy per command class and size decides whether a block may be offloaded. The
+  built-in table comes from 1,491 real sessions; a learned `policy.json` replaces it. On held-out
+  sessions the learned gate cut reopens per session from 23.6 to 4.8, and no block of 138,209 came
+  back different from the original.
+- Claude Code mod 0.2.0: sends the command with each block, so a large `cat` stays in view, and
+  compresses from 512 bytes instead of 6 KB. For Bash on held-out sessions it saves 9.7% of all
+  tool output instead of 6.6%, with fewer extra turns. Tests now pin the pane's off, empty, win and
+  loss states.
+
+### Fixed
+
+- `optimize`'s `query` description no longer claims it helps text; it applies to JSON record
+  arrays.
+
 ## v0.4.0
 
 ### Upgrade notes

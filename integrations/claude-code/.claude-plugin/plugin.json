@@ -1,6 +1,6 @@
 {
   "name": "secondwind",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Compress Bash output through secondwind, recover offloaded blocks, and watch net savings in a pane",
   "types": "./types/index.d.ts"
 }
