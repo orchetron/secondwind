@@ -27,6 +27,7 @@ pub mod netcost;
 pub mod norm;
 pub mod offload;
 pub mod outline;
+pub mod policy;
 pub mod prefix;
 pub mod prose;
 pub mod proxy;
