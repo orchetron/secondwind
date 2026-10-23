@@ -63,12 +63,22 @@ npm install secondwind      # Node / Bun library and adapters
 Rather build the CLI from source? `cargo install --git https://github.com/orchetron/secondwind
 secondwind` (needs [Rust](https://rustup.rs)), or clone this repo and `cargo install --path crates/cli`.
 
-**Claude Code**: with the binary installed, the mod in [`integrations/claude-code`](integrations/claude-code)
-compresses Bash output inside Claude Code itself, per session, with a pane of net savings:
+### Claude Code
+
+With the binary installed, the mod in [`integrations/claude-code`](integrations/claude-code) runs
+secondwind inside Claude Code itself: every large Bash result is compressed after the command has
+run, the full output stays one `resolve` away, and a pane shows what was saved net of every block
+the model fetched back. It is off in each session until you turn it on there.
 
 ```
 /plugin install secondwind --marketplace orchetron/secondwind
 ```
+
+<p align="center">
+  <img src="docs/claude-code-pane.png" width="320" alt="the secondwind pane in Claude Code: touched 71.5%, all output ≈58.8%, verified 2/2, raw / sent / back bars, recent markers">
+</p>
+
+[docs/CLAUDE_CODE.md](docs/CLAUDE_CODE.md) covers the commands, what each figure means, and the limits.
 
 ## Quickstart
 
