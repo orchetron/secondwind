@@ -342,7 +342,7 @@ Lossless *and* cheap is easy to get wrong. A few things that make it hold:
 |---|---|
 | `secondwind run [-- <agent>]` | route an agent through the optimizer (auto-detects one if unnamed), print a verified receipt |
 | `secondwind serve` | host the optimizing endpoint for any agent (Anthropic, OpenAI, or Bedrock shapes) |
-| `secondwind setup` | register the `resolve` tool with Claude Code (`--hook` also compresses Bash output) |
+| `secondwind setup` | register the `resolve` tool with Claude Code (and remove the retired Bash hook) |
 | `secondwind proof` | live dashboard of tokens removed, with per-block lossless proof |
 | `secondwind watch` | live terminal view of savings, refreshed each second (companion to `proof`) |
 | `secondwind check` | verify the install and agent integration |

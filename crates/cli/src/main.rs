@@ -211,15 +211,13 @@ enum Command {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         command: Vec<String>,
     },
-    #[command(
-        about = "Wire the agent: register the resolve tool with Claude Code (and the Bash hook with --hook)"
-    )]
+    #[command(about = "Wire the agent: register the resolve tool with Claude Code")]
     Setup {
         #[arg(help = "Agent to route (e.g. cursor); omit to wire Claude Code")]
         target: Option<String>,
         #[arg(
             long,
-            help = "Also install the PreToolUse hook that compresses Bash output"
+            help = "Retired: installs nothing; setup removes a hook an earlier version installed"
         )]
         hook: bool,
         #[arg(
@@ -246,9 +244,7 @@ enum Command {
     Watch,
     #[command(about = "Check the install: tokenizer, writable state, agent integration")]
     Check,
-    #[command(
-        about = "PreToolUse hook that wraps Bash commands in `exec` so their output is compressed"
-    )]
+    #[command(about = "Retired PreToolUse hook: passes every command through unchanged")]
     Hook,
     #[command(
         about = "Replay real decisions on compressed vs uncompressed context and compare the agent's choice"
@@ -550,15 +546,11 @@ fn check(home: &Path) -> ExitCode {
     let hooked = std::fs::read_to_string(&settings)
         .map(|s| s.contains("secondwind hook"))
         .unwrap_or(false);
-    println!(
-        "  {} bash hook   {}",
-        if hooked { ok } else { no },
-        if hooked {
-            "installed, Bash output compresses transparently"
-        } else {
-            "not installed (run: secondwind setup --hook)"
-        }
-    );
+    if hooked {
+        println!(
+            "  {no} bash hook   retired but still installed, it no longer compresses (run: secondwind setup)"
+        );
+    }
 
     println!();
     if !mcp_registered {
@@ -1136,54 +1128,24 @@ fn reopen_rate(home: &Path, limit: usize) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-const HOOK_SETUP: &str = r#"Add this to .claude/settings.json to compress Bash output transparently:
+const HOOK_RETIRED: &str =
+    "secondwind hook is retired. It rewrote every Bash command before Claude Code's
+permission check, and Claude Code checks the rewritten command, so your Bash allow and deny rules
+stopped applying. It now passes commands through unchanged. Remove it with `secondwind setup`; the
+Claude Code mod compresses Bash output after the command runs instead (docs/CLAUDE_CODE.md).";
 
-  {
-    "hooks": {
-      "PreToolUse": [
-        { "matcher": "Bash", "hooks": [ { "type": "command", "command": "secondwind hook" } ] }
-      ]
-    }
-  }
-
-Then Bash commands run through `secondwind exec -c`, keeping every value present or
-recoverable. The command runs in a child shell, so a `cd` or variable assignment in it
-lasts only for that command. Verify the rewrite lands in a live session; if the field
-name differs in your build, it is a one-line change in `secondwind hook`."#;
-
+// Retired: settings an earlier version wrote still call this, so it answers every event with
+// nothing, which leaves the command and its permission check untouched.
 fn hook() -> ExitCode {
     use std::io::Read;
 
     let stdin = std::io::stdin();
     if stdin.is_terminal() {
-        println!("{HOOK_SETUP}");
+        println!("{HOOK_RETIRED}");
         return ExitCode::SUCCESS;
     }
-    let mut input = String::new();
-    if stdin.lock().read_to_string(&mut input).is_err() {
-        return ExitCode::SUCCESS;
-    }
-    let Ok(event) = serde_json::from_str::<serde_json::Value>(&input) else {
-        return ExitCode::SUCCESS;
-    };
-    let tool = event["tool_name"].as_str().unwrap_or_default();
-    let command = event["tool_input"]["command"].as_str().unwrap_or_default();
-    if tool == "Bash" && !command.is_empty() && !command.trim_start().starts_with("secondwind") {
-        let rewrite = serde_json::json!({
-            "hookSpecificOutput": {
-                "hookEventName": "PreToolUse",
-                "permissionDecision": "allow",
-                "updatedInput": { "command": format!("secondwind exec -c {}", shell_quote(command)) }
-            }
-        });
-        println!("{rewrite}");
-    }
+    let _ = stdin.lock().read_to_string(&mut String::new());
     ExitCode::SUCCESS
-}
-
-// Single-quoted for POSIX shells, so the wrapped command survives the outer parse intact.
-fn shell_quote(s: &str) -> String {
-    format!("'{}'", s.replace('\'', "'\\''"))
 }
 
 // On Windows the `bash` on PATH is usually the WSL launcher, so Git's `sh` is the default there.
