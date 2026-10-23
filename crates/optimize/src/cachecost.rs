@@ -111,7 +111,7 @@ mod tests {
         (0..40)
             .map(|i| {
                 format!(
-                    "The handler_{i} module validates each request against the session store first. "
+                    "fn handler_{i}(request: &Request) -> Result<Response> {{ validate(request, {i}) }}\n"
                 )
             })
             .collect()

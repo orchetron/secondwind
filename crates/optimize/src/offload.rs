@@ -348,46 +348,98 @@ fn preview_budget(body_len: usize) -> usize {
     ((body_len as f64 * PREVIEW_FRACTION) as usize).max(MIN_PREVIEW_BYTES)
 }
 
+// Which preview an offload stub carries in place of the block.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PreviewKind {
+    DiffSummary,
+    MatchMap,
+    CodeOutline,
+    ContentTable,
+    JsonIndex,
+    ProseDigest,
+    Head,
+}
+
+// A small block whose only preview is its first line stays in view under this size.
+const MIN_HEAD_OFFLOAD_BYTES: usize = 2048;
+
+// Whether the preview tells the model enough for offloading to pay. On 1,491 recorded sessions a
+// prose digest was reopened 34 to 80% of the time for no net saving, and a bare head hides the
+// result of a short check the model has to read.
+pub fn worth_offloading(raw: &str) -> bool {
+    let canonical = canonical_of(raw);
+    if canonical.len() < MIN_OFFLOAD_BYTES {
+        return true;
+    }
+    match preview_of(&canonical).0 {
+        PreviewKind::ProseDigest => false,
+        PreviewKind::Head => canonical.len() >= MIN_HEAD_OFFLOAD_BYTES,
+        _ => true,
+    }
+}
+
 fn preview(canonical: &str) -> String {
+    preview_of(canonical).1
+}
+
+fn preview_of(canonical: &str) -> (PreviewKind, String) {
     let budget = preview_budget(canonical.len());
     if let Some(summary) = diff_summary(canonical, budget) {
-        return format!(
-            "[{} bytes offloaded, diff summary, call resolve for the full patch]\n{summary}",
-            canonical.len()
+        return (
+            PreviewKind::DiffSummary,
+            format!(
+                "[{} bytes offloaded, diff summary, call resolve for the full patch]\n{summary}",
+                canonical.len()
+            ),
         );
     }
     if let Some(map) = crate::search::location_map(canonical, budget) {
-        return format!(
-            "[{} bytes offloaded, match map, call resolve for the matched lines]\n{map}",
-            canonical.len()
+        return (
+            PreviewKind::MatchMap,
+            format!(
+                "[{} bytes offloaded, match map, call resolve for the matched lines]\n{map}",
+                canonical.len()
+            ),
         );
     }
     if let Some(outline) = crate::outline::outline(canonical, budget) {
-        return format!(
-            "[{} bytes offloaded, code outline, call resolve for the full body]\n{outline}",
-            canonical.len()
+        return (
+            PreviewKind::CodeOutline,
+            format!(
+                "[{} bytes offloaded, code outline, call resolve for the full body]\n{outline}",
+                canonical.len()
+            ),
         );
     }
     // Record arrays: show the short scalar content as a readable table so the agent answers common
     // lookups inline; long/boilerplate fields and overflow rows stay recoverable through resolve.
     if let Some(table) = content_table(canonical) {
-        return table;
+        return (PreviewKind::ContentTable, table);
     }
     // Index shape, never values, so the model can't answer a value from the preview and must resolve.
     if let Some(index) = json_index(canonical, budget) {
-        return format!(
-            "[{} bytes offloaded, json index, values omitted, call resolve for any value]\n{index}",
-            canonical.len()
+        return (
+            PreviewKind::JsonIndex,
+            format!(
+                "[{} bytes offloaded, json index, values omitted, call resolve for any value]\n{index}",
+                canonical.len()
+            ),
         );
     }
     if let Some(digest) = crate::prose::digest(canonical, crate::prose::budget(canonical.len())) {
-        return format!(
-            "[{} bytes offloaded, prose digest: some sentences verbatim, each \u{2026} a gap, call resolve for the full text]\n{digest}",
-            canonical.len()
+        return (
+            PreviewKind::ProseDigest,
+            format!(
+                "[{} bytes offloaded, prose digest: some sentences verbatim, each \u{2026} a gap, call resolve for the full text]\n{digest}",
+                canonical.len()
+            ),
         );
     }
     let head: String = canonical.chars().take(80).collect();
-    format!("[{} bytes offloaded, preview: {head} ...]", canonical.len())
+    (
+        PreviewKind::Head,
+        format!("[{} bytes offloaded, preview: {head} ...]", canonical.len()),
+    )
 }
 
 // The first line is always kept, so a preview is never empty.
@@ -795,6 +847,45 @@ mod tests {
         assert!(out.stub.len() < raw.len());
         assert!(out.stub.contains(&out.marker));
         assert_eq!(store.resolve(&out.marker).as_deref(), Some(raw.as_str()));
+    }
+
+    #[test]
+    fn a_block_with_a_thin_preview_stays_in_view() {
+        let status: String = (0..12)
+            .map(|i| format!("valid  bindings/node/platforms/package-{i}/package.json\n"))
+            .collect();
+        assert!((MIN_OFFLOAD_BYTES..MIN_HEAD_OFFLOAD_BYTES).contains(&status.len()));
+        assert_eq!(preview_of(&canonical_of(&status)).0, PreviewKind::Head);
+        assert!(!worth_offloading(&status));
+        let mut optimizer = crate::Optimizer::default();
+        assert!(!matches!(
+            optimizer.compress_block(&status),
+            crate::Outcome::Offloaded { .. }
+        ));
+
+        assert!(
+            worth_offloading(&status.repeat(4)),
+            "a large block still offloads"
+        );
+        assert!(
+            worth_offloading("tiny"),
+            "under the offload minimum the store answers, not this rule"
+        );
+
+        let prose: String = (0..30)
+            .map(|i| format!("The handler number {i} validates every request against the session store before it answers. "))
+            .collect();
+        assert_eq!(
+            preview_of(&canonical_of(&prose)).0,
+            PreviewKind::ProseDigest
+        );
+        assert!(!worth_offloading(&prose));
+
+        let code: String = (0..200)
+            .map(|i| format!("fn handler_{i}(input: &str) -> usize {{ input.len() * {i} }}\n"))
+            .collect();
+        assert_eq!(preview_of(&canonical_of(&code)).0, PreviewKind::CodeOutline);
+        assert!(worth_offloading(&code));
     }
 
     #[test]
