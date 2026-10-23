@@ -8,8 +8,9 @@ const RULES_END: &str = "<!-- secondwind:end -->";
 const RESOLVE_RULE: &str = "When a tool result contains a `<<swload:...>>` marker, its full content was offloaded by secondwind to save tokens. Call the `resolve` tool with that exact marker to fetch the original verbatim.";
 
 // Turnkey agent wiring. With a target it routes that agent; with none it registers the secondwind MCP
-// server (so the resolve tool rides every request and `serve`/`run` can offload) plus the PreToolUse Bash
-// hook under --hook. Edits are idempotent and back up first; a file that does not parse is left alone.
+// server (so the resolve tool rides every request and `serve`/`run` can offload) and removes the
+// retired Bash hook an earlier version installed. Edits are idempotent and back up first; a file that
+// does not parse is left alone.
 pub fn run(
     home: &Path,
     with_hook: bool,
@@ -42,20 +43,21 @@ pub fn run(
     }
 
     if with_hook {
-        let settings = home.join(".claude").join("settings.json");
-        match install_hook(&settings) {
-            Ok(true) => println!(
-                "  {ok} hook  Bash outputs compress via {}",
-                settings.display()
-            ),
-            Ok(false) => println!("  {ok} hook  already installed"),
-            Err(err) => {
-                eprintln!("  \u{2717} hook  {err}");
-                failed = true;
-            }
+        println!(
+            "  - hook  retired, nothing installed: the Claude Code mod compresses Bash output (docs/CLAUDE_CODE.md)"
+        );
+    }
+    let settings = home.join(".claude").join("settings.json");
+    match uninstall_hook(&settings) {
+        Ok(true) => println!(
+            "  {ok} hook  removed the retired Bash hook from {}",
+            settings.display()
+        ),
+        Ok(false) => {}
+        Err(err) => {
+            eprintln!("  \u{2717} hook  {err}");
+            failed = true;
         }
-    } else {
-        println!("  - hook  skipped (add with: secondwind setup --hook)");
     }
 
     println!();
@@ -524,6 +526,8 @@ fn register_mcp(config: &Path, home: &Path) -> Result<bool, String> {
     Ok(true)
 }
 
+// What earlier versions wrote; kept so tests can stand up a stale install.
+#[cfg(test)]
 fn install_hook(settings: &Path) -> Result<bool, String> {
     let mut root = load(settings)?;
     if !root.is_object() {
@@ -788,6 +792,28 @@ mod tests {
         std::fs::write(&config, "{not json").unwrap();
         assert!(register_mcp(&config, &dir).is_err());
         assert_eq!(std::fs::read_to_string(&config).unwrap(), "{not json");
+    }
+
+    #[test]
+    fn setup_never_installs_the_hook_and_removes_a_stale_one() {
+        let dir = scratch("retired");
+        let settings = dir.join(".claude").join("settings.json");
+        let _ = run(&dir, true, None, false, false, false);
+        let root: Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.join(".claude.json")).unwrap())
+                .unwrap();
+        assert_eq!(root["mcpServers"]["secondwind"]["command"], "secondwind");
+        assert!(
+            !settings.exists()
+                || !std::fs::read_to_string(&settings)
+                    .unwrap()
+                    .contains("secondwind hook")
+        );
+
+        assert!(install_hook(&settings).unwrap());
+        let _ = run(&dir, false, None, false, false, false);
+        let after = std::fs::read_to_string(&settings).unwrap();
+        assert!(!after.contains("secondwind hook"), "{after}");
     }
 
     #[test]

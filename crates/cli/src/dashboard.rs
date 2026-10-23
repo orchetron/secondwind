@@ -15,7 +15,7 @@ pub fn serve(home: &Path, listen: &str) -> ExitCode {
     let url = format!("http://{listen}");
     eprintln!("secondwind proof on {url}");
     eprintln!(
-        "optimize something (secondwind run, exec, the Bash hook, or the mcp server) and it lands here live"
+        "optimize something (secondwind run, exec, the Claude Code mod, or the mcp server) and it lands here live"
     );
     open_browser(&url);
 
@@ -524,7 +524,7 @@ html,body{margin:0; background:#0B0D13;}
       <p>This ledger only shows real events. Run your agent through secondwind and the first block appears here within a second.</p>
       <div class="term">
         <div><span class="c">$</span> secondwind run -- claude</div>
-        <div style="margin-top:6px"><span class="c">$</span> secondwind exec -- ls -la &nbsp;<span class="cm"># or serve, the Bash hook, the mcp server</span></div>
+        <div style="margin-top:6px"><span class="c">$</span> secondwind exec -- ls -la &nbsp;<span class="cm"># or serve, the Claude Code mod, the mcp server</span></div>
       </div>
     </section>
 

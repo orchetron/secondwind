@@ -73,10 +73,10 @@ fn a_missing_program_exits_127() {
 }
 
 #[test]
-fn the_hook_rewrite_survives_the_outer_shell_parse() {
+fn the_retired_hook_leaves_every_command_to_the_permission_check() {
     let home = home("hook");
-    let command = "echo 'a|b' && cd / && pwd";
-    let event = serde_json::json!({ "tool_name": "Bash", "tool_input": { "command": command } });
+    let event =
+        serde_json::json!({ "tool_name": "Bash", "tool_input": { "command": "rm -rf build" } });
     let mut hook = secondwind(&home)
         .arg("hook")
         .stdin(Stdio::piped())
@@ -89,30 +89,9 @@ fn the_hook_rewrite_survives_the_outer_shell_parse() {
         .write_all(event.to_string().as_bytes())
         .unwrap();
     let out = hook.wait_with_output().unwrap();
-    let rewrite: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    let rewritten = rewrite["hookSpecificOutput"]["updatedInput"]["command"]
-        .as_str()
-        .unwrap();
-    assert_eq!(
-        rewritten,
-        "secondwind exec -c 'echo '\\''a|b'\\'' && cd / && pwd'"
-    );
-
-    let bin_dir = Path::new(env!("CARGO_BIN_EXE_secondwind"))
-        .parent()
-        .unwrap();
-    let path = format!(
-        "{}:{}",
-        bin_dir.display(),
-        std::env::var("PATH").unwrap_or_default()
-    );
-    let out = Command::new("sh")
-        .arg("-c")
-        .arg(rewritten)
-        .env("PATH", path)
-        .env("HOME", &home)
-        .output()
-        .unwrap();
-    assert_eq!(stdout(&out), "a|b\n/\n");
     assert_eq!(out.status.code(), Some(0));
+    assert!(
+        out.stdout.is_empty(),
+        "no rewrite and no permission decision"
+    );
 }
