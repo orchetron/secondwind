@@ -129,6 +129,273 @@ fn references_after(index: &HashMap<String, Vec<usize>>, token: &str, after: usi
         .is_some_and(|turns| turns.iter().any(|&t| t > after))
 }
 
+// One tool result as the optimizer would have handled it, and whether the model later needed what
+// it hid. Only an offload can hide anything: an inline codec keeps every value in view.
+#[derive(Debug, Clone)]
+pub struct BlockOutcome {
+    pub tool: String,
+    pub class: String,
+    pub shape: String,
+    pub outcome: &'static str,
+    pub turn: usize,
+    pub raw_bytes: usize,
+    pub raw_tokens: u64,
+    pub sent_tokens: u64,
+    pub reopened: bool,
+    pub faithful: bool,
+    // Context the model held when it read this result: what one more turn re-reads, from billing.
+    pub context_tokens: u64,
+    // Assistant turns after this result: how many times its tokens are read again.
+    pub turns_after: usize,
+}
+
+// Runs the optimizer over every tool result in a trace. Takes a fresh optimizer per trace so the
+// offload store never outlives it. A hidden token counts as needed only when the assistant uses it
+// before any later tool result or user message supplies it again, so a grep followed by a read of
+// the same file charges the read, not the grep.
+pub fn evaluate(
+    trace: &Trace,
+    optimizer: &mut crate::Optimizer,
+    counter: &dyn crate::tokens::TokenCounter,
+) -> Vec<BlockOutcome> {
+    let first_seen = first_seen_index(trace);
+    let assistant_tokens = assistant_token_index(trace);
+    let supplied = supply_index(trace);
+    let needed = |tok: &str, ti: usize| {
+        let resupplied = supplied
+            .get(tok)
+            .and_then(|turns| turns.iter().copied().find(|&s| s > ti))
+            .unwrap_or(usize::MAX);
+        assistant_tokens
+            .get(tok)
+            .is_some_and(|turns| turns.iter().any(|&t| t > ti && t < resupplied))
+    };
+    let calls: HashMap<&str, (&str, &str)> = trace
+        .turns
+        .iter()
+        .flat_map(|turn| &turn.segments)
+        .filter_map(|segment| match &segment.kind {
+            SegmentKind::ToolCall { name, id: Some(id) } => {
+                Some((id.as_str(), (name.as_str(), segment.effective.as_str())))
+            }
+            _ => None,
+        })
+        .collect();
+
+    let mut next_context = vec![0u64; trace.turns.len()];
+    let mut assistant_after = vec![0usize; trace.turns.len()];
+    let mut seen = 0;
+    let mut later = 0;
+    for (ti, turn) in trace.turns.iter().enumerate().rev() {
+        assistant_after[ti] = later;
+        if turn.role == Role::Assistant {
+            later += 1;
+        }
+        if let Some(b) = turn.billing.filter(|_| turn.role == Role::Assistant) {
+            seen = b.input_tokens
+                + b.cache_read_tokens
+                + b.cache_write_5m_tokens
+                + b.cache_write_1h_tokens;
+        }
+        next_context[ti] = seen;
+    }
+
+    let mut out = Vec::new();
+    for (ti, turn) in trace.turns.iter().enumerate() {
+        for segment in &turn.segments {
+            let SegmentKind::ToolResult { tool, id } = &segment.kind else {
+                continue;
+            };
+            let body = segment.original.as_deref().unwrap_or(&segment.effective);
+            if body.is_empty() {
+                continue;
+            }
+            let input = id.as_deref().and_then(|id| calls.get(id)).map(|c| c.1);
+            let raw_tokens = counter.count(body) as u64;
+            // Faithful is checked here independently of the optimizer's own gate: an inline wire
+            // must decode to the certified content, an offload must resolve to the original.
+            let (outcome, sent, hidden_from, faithful) = match optimizer.compress_block(body) {
+                crate::Outcome::Compressed { wire, .. } => {
+                    let ok = crate::certificate::verify(&wire, &crate::certificate::certify(body));
+                    ("inline", wire, None, ok)
+                }
+                crate::Outcome::Offloaded { stub, marker, .. } => {
+                    let ok = optimizer
+                        .resolve(&marker)
+                        .is_some_and(|back| same_content(&back, body));
+                    ("offload", stub.clone(), Some(stub), ok)
+                }
+                crate::Outcome::KeptVerbatim { .. } => ("verbatim", body.to_string(), None, true),
+            };
+            let reopened = hidden_from.is_some_and(|stub| {
+                residual_tokens(body, &stub)
+                    .iter()
+                    .any(|tok| first_seen.get(tok) == Some(&ti) && needed(tok, ti))
+            });
+            out.push(BlockOutcome {
+                tool: tool.clone(),
+                class: command_class(tool, input),
+                shape: classify(body),
+                outcome,
+                turn: ti,
+                raw_bytes: body.len(),
+                raw_tokens,
+                sent_tokens: counter.count(&sent) as u64,
+                reopened,
+                faithful,
+                context_tokens: next_context[ti],
+                turns_after: assistant_after[ti],
+            });
+        }
+    }
+    out
+}
+
+// Byte-identical text, or JSON holding the same value; an offload stores JSON canonicalized.
+fn same_content(back: &str, original: &str) -> bool {
+    if back == original {
+        return true;
+    }
+    match (
+        serde_json::from_str::<serde_json::Value>(back),
+        serde_json::from_str::<serde_json::Value>(original),
+    ) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    }
+}
+
+// What produced a result: the tool, and for a shell call the program whose output it is.
+pub fn command_class(tool: &str, input: Option<&str>) -> String {
+    if tool != "Bash" {
+        return tool.to_string();
+    }
+    let command = input
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+        .and_then(|v| v["command"].as_str().map(str::to_string))
+        .unwrap_or_default();
+    let command = without_heredoc_bodies(&command);
+    let words: Vec<&str> = command
+        .split(|c: char| c.is_whitespace() || c == ';')
+        .collect();
+    let opens_loop = words
+        .iter()
+        .any(|w| matches!(*w, "for" | "while" | "until"));
+    if opens_loop && words.contains(&"do") || words.first() == Some(&"if") {
+        return "Bash:loop".to_string();
+    }
+    let last = command
+        .split(['\n', ';'])
+        .flat_map(|part| part.split("&&"))
+        .flat_map(|part| part.split("||"))
+        .map(str::trim)
+        .filter(|part| {
+            let head = part.split_whitespace().next().unwrap_or("");
+            !part.is_empty()
+                && !head.starts_with('#')
+                && !matches!(
+                    head,
+                    "cd" | "echo" | "printf" | "export" | "set" | "source" | "true" | "sleep"
+                )
+        })
+        .last()
+        .unwrap_or("");
+    let first_stage = last.split('|').next().unwrap_or("").trim();
+    let mut words = first_stage
+        .split_whitespace()
+        .skip_while(|w| {
+            (w.contains('=') && !w.starts_with('-'))
+                || matches!(*w, "sudo" | "time" | "nohup" | "env" | "command")
+        })
+        .peekable();
+    if words.peek() == Some(&"timeout") {
+        words.next();
+        words.next();
+    }
+    let program = words
+        .next()
+        .unwrap_or("")
+        .trim_matches(['"', '\''])
+        .rsplit('/')
+        .next()
+        .unwrap_or("");
+    let program = match program {
+        "" => return "Bash:other".to_string(),
+        "python" | "python3" | "uv" | "npx" | "bunx" => {
+            let next = words
+                .find(|w| !w.starts_with('-') && !w.starts_with('<'))
+                .unwrap_or("-");
+            return format!("Bash:{program} {}", next.rsplit('/').next().unwrap_or(""));
+        }
+        "git" | "cargo" | "npm" | "gh" | "pnpm" | "bun" | "docker" | "kubectl" => {
+            let mut sub = "";
+            while let Some(w) = words.next() {
+                if matches!(
+                    w,
+                    "-C" | "-c" | "--git-dir" | "--work-tree" | "--manifest-path"
+                ) {
+                    words.next();
+                } else if !w.starts_with('-') {
+                    sub = w;
+                    break;
+                }
+            }
+            return format!("Bash:{program} {sub}");
+        }
+        other => other,
+    };
+    let piped = if last.contains('|') { " |" } else { "" };
+    format!("Bash:{program}{piped}")
+}
+
+// Drops the body of every `<<WORD` heredoc so its lines are not read as commands.
+fn without_heredoc_bodies(command: &str) -> String {
+    let mut out = String::new();
+    let mut end: Option<String> = None;
+    for line in command.lines() {
+        if let Some(word) = &end {
+            if line.trim() == word {
+                end = None;
+            }
+            continue;
+        }
+        out.push_str(line);
+        out.push('\n');
+        if let Some(at) = line.find("<<") {
+            let word: String = line[at + 2..]
+                .trim_start_matches('-')
+                .trim_start()
+                .trim_start_matches(['\'', '"'])
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '_')
+                .collect();
+            if !word.is_empty() {
+                end = Some(word);
+            }
+        }
+    }
+    out
+}
+
+// Turns where a token reaches the model from outside: tool results and user messages.
+fn supply_index(trace: &Trace) -> HashMap<String, Vec<usize>> {
+    let mut index: HashMap<String, Vec<usize>> = HashMap::new();
+    for (ti, turn) in trace.turns.iter().enumerate() {
+        if turn.role == Role::Assistant {
+            continue;
+        }
+        let mut seen = HashSet::new();
+        for segment in &turn.segments {
+            for tok in significant(&segment.effective) {
+                if seen.insert(tok) {
+                    index.entry(tok.to_string()).or_default().push(ti);
+                }
+            }
+        }
+    }
+    index
+}
+
 fn classify(body: &str) -> String {
     if body.contains("diff --git") {
         "diff".to_string()
@@ -201,6 +468,119 @@ mod tests {
             ));
         }
         out
+    }
+
+    // A body the optimizer offloads as a code outline, so later lines stay hidden.
+    fn code_body() -> String {
+        (0..200)
+            .map(|i| {
+                format!(
+                    "fn handler_{i}(input: &str) -> Result<usize> {{ let key = uniquetoken{i} ; parse(input).map(|v| v * {i}) }}\n"
+                )
+            })
+            .collect()
+    }
+
+    fn evaluated(turns: Vec<Turn>) -> Vec<BlockOutcome> {
+        let mut optimizer = crate::Optimizer::default();
+        evaluate(&trace(turns), &mut optimizer, &crate::tokens::ByteCounter)
+    }
+
+    #[test]
+    fn eval_charges_a_reopen_to_the_result_that_hid_the_token() {
+        let out = evaluated(vec![
+            tool_turn(0, &code_body()),
+            assistant_turn(1, "I will use uniquetoken137 from the results"),
+        ]);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].outcome, "offload");
+        assert!(out[0].reopened);
+        assert!(out[0].faithful);
+        assert!(out[0].sent_tokens < out[0].raw_tokens);
+    }
+
+    #[test]
+    fn eval_charges_a_later_result_that_supplies_the_token_again() {
+        let out = evaluated(vec![
+            tool_turn(0, &code_body()),
+            tool_turn(1, "the file holds uniquetoken137 on its first line"),
+            assistant_turn(2, "I will use uniquetoken137 from the file"),
+        ]);
+        assert_eq!(out[0].outcome, "offload");
+        assert!(!out[0].reopened, "the model read it from the second result");
+    }
+
+    #[test]
+    fn every_shape_the_optimizer_touches_is_faithful() {
+        let json = format!(
+            "[{}]",
+            (0..60)
+                .map(|i| format!(
+                    r#"{{"id":{i},"name":"item {i}","tags":["a","b"],"score":{i}.5}}"#
+                ))
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        let log: String = (0..300)
+            .map(|i| {
+                format!(
+                    "2026-10-23T01:{:02}:00Z INFO worker-{} handled job {i} in {}ms\n",
+                    i % 60,
+                    i % 7,
+                    i * 3
+                )
+            })
+            .collect();
+        let out = evaluated(vec![
+            tool_turn(0, &json),
+            tool_turn(1, &log),
+            tool_turn(2, &big_search_body("needle")),
+        ]);
+        assert_eq!(out.len(), 3);
+        for block in &out {
+            assert!(block.faithful, "{} came back different", block.outcome);
+        }
+        assert!(out.iter().any(|b| b.outcome != "verbatim"));
+    }
+
+    #[test]
+    fn same_content_accepts_reformatted_json_and_nothing_else() {
+        assert!(same_content(
+            r#"{"a":1,"b":[2,3]}"#,
+            "{ \"b\": [2, 3], \"a\": 1 }"
+        ));
+        assert!(same_content("plain text\n", "plain text\n"));
+        assert!(!same_content("plain text", "plain text\n"));
+        assert!(!same_content(r#"{"a":1}"#, r#"{"a":2}"#));
+    }
+
+    #[test]
+    fn command_class_names_the_program_whose_output_it_is() {
+        let class = |command: &str| {
+            command_class(
+                "Bash",
+                Some(&serde_json::json!({ "command": command }).to_string()),
+            )
+        };
+        assert_eq!(class("cd repo && cat src/main.rs"), "Bash:cat");
+        assert_eq!(class("grep -rn foo src | head -40"), "Bash:grep |");
+        assert_eq!(class("git -C repo log --oneline -5"), "Bash:git log");
+        assert_eq!(
+            class("RUST_LOG=1 timeout 60 cargo test -p x"),
+            "Bash:cargo test"
+        );
+        assert_eq!(class("\"$HOME/bin/tool\" --flag"), "Bash:tool");
+        assert_eq!(
+            class("python3 - <<'EOF'\nimport os\nprint(os.getcwd())\nEOF"),
+            "Bash:python3 -"
+        );
+        assert_eq!(
+            class("cat > f.txt <<EOF\nfor x in y; do\nEOF\nwc -l f.txt"),
+            "Bash:wc"
+        );
+        assert_eq!(class("cd x; for f in *.rs; do wc -l $f; done"), "Bash:loop");
+        assert_eq!(class("echo hi"), "Bash:other");
+        assert_eq!(command_class("Read", None), "Read");
     }
 
     #[test]

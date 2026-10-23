@@ -348,6 +348,7 @@ Lossless *and* cheap is easy to get wrong. A few things that make it hold:
 | `secondwind check` | verify the install and agent integration |
 | `secondwind optimize <file>` | compress one tool-output block and print the result |
 | `secondwind verify <wire> <cert>` | re-check a compressed wire against its fidelity certificate |
+| `secondwind eval` | replay your recorded sessions through the optimizer: tokens sent, reopens, net savings and faithfulness per tool and command |
 | `secondwind exec -- <cmd>` | compress one command's output, shell-filter style (`-c '<script>'` runs a shell string) |
 | `secondwind` (no args) | audit what optimization did to your existing sessions |
 

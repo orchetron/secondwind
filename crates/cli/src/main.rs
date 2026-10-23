@@ -98,6 +98,19 @@ enum Command {
         limit: usize,
     },
     #[command(
+        about = "Replay discovered traces through the optimizer: tokens sent, reopens and net savings per tool and command"
+    )]
+    Eval {
+        #[arg(long, default_value_t = 0, help = "Read at most this many trace files")]
+        limit: usize,
+        #[arg(
+            long,
+            value_name = "PATH",
+            help = "Also write one JSON line per tool result"
+        )]
+        blocks: Option<PathBuf>,
+    },
+    #[command(
         about = "Estimate the tokens the optimizer would remove across your discovered traffic"
     )]
     CacheSavings {
@@ -296,6 +309,7 @@ fn main() -> ExitCode {
         }) => return optimize(&input, tokens, prose),
         Some(Command::Verify { wire, certificate }) => return verify(&wire, &certificate),
         Some(Command::ReopenRate { limit }) => return reopen_rate(&home, limit),
+        Some(Command::Eval { limit, blocks }) => return eval(&home, limit, blocks.as_deref()),
         Some(Command::CacheSavings { limit }) => return cache_savings(&home, limit),
         Some(Command::Exec { script, command }) => {
             return exec(&home, script.as_deref(), &command);
@@ -782,6 +796,130 @@ fn verify(wire: &PathBuf, certificate: &str) -> ExitCode {
         println!("FAIL: wire does not match the certificate");
         ExitCode::FAILURE
     }
+}
+
+// Net assumes a reopened offload is fetched back whole, the costliest case; a slice costs less.
+fn eval(home: &Path, limit: usize, blocks: Option<&Path>) -> ExitCode {
+    use secondwind_optimize::counterfactual::{BlockOutcome, evaluate};
+    use std::io::Write;
+
+    #[derive(Default)]
+    struct Tally {
+        blocks: u64,
+        inline: u64,
+        offload: u64,
+        reopened: u64,
+        raw: u64,
+        sent: u64,
+        back: u64,
+        unfaithful: u64,
+    }
+    impl Tally {
+        fn add(&mut self, b: &BlockOutcome) {
+            self.blocks += 1;
+            if !b.faithful {
+                self.unfaithful += 1;
+            }
+            self.raw += b.raw_tokens;
+            self.sent += b.sent_tokens;
+            match b.outcome {
+                "inline" => self.inline += 1,
+                "offload" => self.offload += 1,
+                _ => {}
+            }
+            if b.reopened {
+                self.reopened += 1;
+                self.back += b.raw_tokens;
+            }
+        }
+        fn json(&self) -> serde_json::Value {
+            let net = self.raw as i64 - self.sent as i64 - self.back as i64;
+            let ratio = |a: f64, b: u64| if b == 0 { 0.0 } else { a / b as f64 };
+            serde_json::json!({
+                "blocks": self.blocks,
+                "inline": self.inline,
+                "offloaded": self.offload,
+                "reopened": self.reopened,
+                "reopen_rate": ratio(self.reopened as f64, self.offload),
+                "raw_tokens": self.raw,
+                "sent_tokens": self.sent,
+                "back_tokens": self.back,
+                "net_tokens": net,
+                "net_share": ratio(net as f64, self.raw),
+                "unfaithful": self.unfaithful,
+            })
+        }
+    }
+
+    let counter = std::sync::Arc::new(secondwind_optimize::tokens::Tiktoken::cl100k());
+    let mut dump = match blocks.map(std::fs::File::create).transpose() {
+        Ok(file) => file.map(std::io::BufWriter::new),
+        Err(err) => {
+            eprintln!("secondwind eval: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let model = configured_model();
+    let mut total = Tally::default();
+    let mut by_class: BTreeMap<String, Tally> = BTreeMap::new();
+    let mut files_read = 0usize;
+    let mut traces = 0usize;
+    for source in secondwind_sources::all() {
+        let Ok(files) = source.discover(home) else {
+            continue;
+        };
+        for file in &files {
+            if limit != 0 && files_read >= limit {
+                break;
+            }
+            let Ok(outcome) = source.read(file) else {
+                continue;
+            };
+            files_read += 1;
+            for trace in &outcome.traces {
+                traces += 1;
+                let mut optimizer = secondwind_optimize::Optimizer::default()
+                    .with_counter(counter.clone())
+                    .with_model(&model);
+                for block in evaluate(trace, &mut optimizer, counter.as_ref()) {
+                    total.add(&block);
+                    by_class.entry(block.class.clone()).or_default().add(&block);
+                    if let Some(out) = dump.as_mut() {
+                        let line = serde_json::json!({
+                            "trace": traces, "turn": block.turn, "tool": block.tool,
+                            "class": block.class, "shape": block.shape,
+                            "outcome": block.outcome, "bytes": block.raw_bytes,
+                            "raw": block.raw_tokens, "sent": block.sent_tokens,
+                            "reopened": block.reopened, "faithful": block.faithful,
+                            "ctx": block.context_tokens, "after": block.turns_after,
+                        });
+                        let _ = writeln!(out, "{line}");
+                    }
+                }
+            }
+        }
+    }
+
+    let mut classes: Vec<_> = by_class.into_iter().collect();
+    classes.sort_by_key(|(_, t)| std::cmp::Reverse(t.raw));
+    let by_class: Vec<serde_json::Value> = classes
+        .iter()
+        .map(|(k, t)| {
+            let mut row = t.json();
+            row["class"] = serde_json::json!(k);
+            row
+        })
+        .collect();
+    let result = serde_json::json!({
+        "files_read": files_read,
+        "total": total.json(),
+        "by_class": by_class,
+    });
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&result).unwrap_or_default()
+    );
+    ExitCode::SUCCESS
 }
 
 fn reopen_rate(home: &Path, limit: usize) -> ExitCode {
