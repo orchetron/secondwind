@@ -971,6 +971,7 @@ fn eval(
                         "raw": block.raw_tokens, "sent": block.sent_tokens,
                         "reopened": block.reopened, "faithful": block.faithful,
                         "ctx": block.context_tokens, "after": block.turns_after,
+                        "preview": block.preview,
                     });
                     let _ = writeln!(out, "{line}");
                 }

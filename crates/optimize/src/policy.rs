@@ -135,6 +135,7 @@ mod tests {
             faithful: true,
             context_tokens: 0,
             turns_after: 0,
+            preview: "head",
         }
     }
 

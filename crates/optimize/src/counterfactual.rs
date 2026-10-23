@@ -147,6 +147,8 @@ pub struct BlockOutcome {
     pub context_tokens: u64,
     // Assistant turns after this result: how many times its tokens are read again.
     pub turns_after: usize,
+    // For an offload, the kind of preview the model saw in its place.
+    pub preview: &'static str,
 }
 
 #[derive(Default, Clone, Copy)]
@@ -282,6 +284,11 @@ pub fn evaluate(
                 faithful,
                 context_tokens: next_context[ti],
                 turns_after: assistant_after[ti],
+                preview: if outcome == "offload" {
+                    preview_kind(&sent)
+                } else {
+                    ""
+                },
             });
         }
     }
@@ -332,6 +339,27 @@ fn same_content(back: &str, original: &str) -> bool {
         (Ok(a), Ok(b)) => a == b,
         _ => false,
     }
+}
+
+// The preview an offload stub carries, read from its label, so it names what the model saw.
+pub fn preview_kind(stub: &str) -> &'static str {
+    let label = stub.lines().next().unwrap_or("");
+    const KINDS: [(&str, &str); 7] = [
+        ("offloaded, diff summary", "diff summary"),
+        ("offloaded, match map", "match map"),
+        ("offloaded, code outline", "code outline"),
+        ("offloaded, content table", "content table"),
+        ("offloaded, json index", "json index"),
+        ("offloaded, prose digest", "prose digest"),
+        ("offloaded, preview:", "head"),
+    ];
+    if let Some((_, kind)) = KINDS.iter().find(|(tag, _)| label.contains(tag)) {
+        return kind;
+    }
+    if stub.contains("less relevant to the query") {
+        return "relevance split";
+    }
+    "other"
 }
 
 // What produced a result: the tool, and for a shell call the program whose output it is.
