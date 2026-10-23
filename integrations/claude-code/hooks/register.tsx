@@ -4,7 +4,7 @@ import type { Color, EngineInterface, Register } from 'claude-code'
 import type { Marker, Stats } from '../types'
 
 const PANE = 'secondwind'
-const MIN_BYTES = 6000
+const MIN_BYTES = 512
 const MARKER = /<<swload:[0-9a-f]{16}>>/
 const RECENT = 8
 const ACCENT: Color = 'claude'
@@ -202,7 +202,7 @@ export const register: Register = on => {
     const since = Date.now()
     let answer: Answer
     try {
-      answer = await rpc($, 'optimize', { block: stdout })
+      answer = await rpc($, 'optimize', { block: stdout, tool: 'Bash', command: e.command })
     } catch {
       await update($, stats, s => ({ ...EMPTY, ...s, failed: s.failed + 1, seenTokens: s.seenTokens + estimate(stdout) }))
       return ran
@@ -402,7 +402,7 @@ export const register: Register = on => {
         )}
 
         <Box marginTop={1}>
-          <Text dimColor>{list.length ? `recent` : isOn ? 'Bash output over 6 KB lands here.' : 'Turn on to compress Bash output in this session.'}</Text>
+          <Text dimColor>{list.length ? `recent` : isOn ? 'Bash output over 512 bytes lands here.' : 'Turn on to compress Bash output in this session.'}</Text>
         </Box>
         {recent.map(m => (
           <Box key={m.marker} flexDirection="row" gap={1}>

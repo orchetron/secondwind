@@ -39,7 +39,9 @@ What the pane shows:
 Net is raw minus sent minus handed back, so a block the model resolves in full shows as a cost,
 in red. `≈` marks a byte estimate; exact figures come from the binary's ledger.
 
-Only Bash results of 6 KB or more are compressed. Claude Code caps a Bash result at 30,000
+Bash results of 512 bytes or more go to the binary, with the command that produced them. The
+binary keeps output that is usually read whole in view, such as a large `cat`, and offloads the
+rest; `secondwind eval --learn` fits that choice to your own sessions. Claude Code caps a Bash result at 30,000
 characters before any plugin sees it, so the mod compresses what remains.
 
 ## Develop

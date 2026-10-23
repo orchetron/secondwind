@@ -25,7 +25,10 @@ function answer(text: string, isError = false): string {
   })}\n`
 }
 
-function engine(on: Parameters<Parameters<typeof test>[1]>[1], stdout = '') {
+type Sent = { name: string; arguments: Record<string, unknown> }
+
+function engine(on: Parameters<Parameters<typeof test>[1]>[1], stdout = '', bash = BIG): Sent[] {
+  const sent: Sent[] = []
   on('tool.register', () => ({ value: { tool: 'mcp__secondwind__recover' } }))
   on('command.register', () => ({ value: { command: 'secondwind' } }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
@@ -38,12 +41,14 @@ function engine(on: Parameters<Parameters<typeof test>[1]>[1], stdout = '') {
     if (argv.startsWith('tail')) return { value: { exitCode: 1, stdout: '', stderr: '' } }
     const call = JSON.parse(e.init?.stdin ?? '{}')
     const name = call.params?.name
+    sent.push(call.params)
     const text = name === 'optimize' ? stdout : name === 'resolve' ? BIG : 'unknown'
     return { value: { exitCode: 0, stdout: answer(text, name === 'unknown'), stderr: '' } }
   })
   on('tool.call', { tool: 'Bash' }, () => ({
-    result: { stdout: BIG, stderr: '', interrupted: false },
+    result: { stdout: bash, stderr: '', interrupted: false },
   }))
+  return sent
 }
 
 test('large Bash output is replaced by the stub and the pane books it net', async ($, on) => {
@@ -66,6 +71,29 @@ test('large Bash output is replaced by the stub and the pane books it net', asyn
     expect((await ui.find({ type: 'Text', text: /×1/ }))?.text).toBe('×1')
     await ui.unmount()
   }
+})
+
+test('the binary hears which command produced the output, so it can keep a whole read in view', async ($, on) => {
+  const sent = engine(on, STUB)
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await $.command.run({ command: 'secondwind', args: 'on' })
+
+  await $.tool.call({ tool: 'Bash', command: 'cat big.txt' })
+  const optimize = sent.find(call => call.name === 'optimize')
+  expect(optimize?.arguments.tool).toBe('Bash')
+  expect(optimize?.arguments.command).toBe('cat big.txt')
+  expect(optimize?.arguments.block).toBe(BIG)
+})
+
+test('output under 512 bytes never reaches the binary', async ($, on) => {
+  const small = 'x'.repeat(511)
+  const sent = engine(on, STUB, small)
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await $.command.run({ command: 'secondwind', args: 'on' })
+
+  const ran = await $.tool.call({ tool: 'Bash', command: 'ls' })
+  expect((ran.result as { stdout: string }).stdout).toBe(small)
+  expect(sent.filter(call => call.name === 'optimize')).toHaveLength(0)
 })
 
 test('small output and a verbatim answer pass through untouched', async ($, on) => {
