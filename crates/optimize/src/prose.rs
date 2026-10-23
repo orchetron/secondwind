@@ -13,6 +13,8 @@ pub fn budget(body_len: usize) -> usize {
 }
 
 const MIN_SENTENCE_WORDS: usize = 8;
+// One line standing for every run of skipped sentences in a digest.
+const GAP: &str = "\u{2026}";
 
 // Orders a block's sentences best-first; the caller keeps a budget-bounded prefix.
 pub trait ProseScorer: Send + Sync {
@@ -59,7 +61,13 @@ struct Selection<'a> {
 }
 
 // None when the block has no prose structure, so it falls through untouched.
-fn select<'a>(text: &'a str, budget: usize, scorer: &dyn ProseScorer) -> Option<Selection<'a>> {
+// `reserve` is budget held back per chosen sentence for what the caller prints between them.
+fn select<'a>(
+    text: &'a str,
+    budget: usize,
+    reserve: usize,
+    scorer: &dyn ProseScorer,
+) -> Option<Selection<'a>> {
     let sentences: Vec<&str> = sentences(text)
         .take(MAX_SENTENCES)
         .filter(|s| is_prose(s))
@@ -81,7 +89,7 @@ fn select<'a>(text: &'a str, budget: usize, scorer: &dyn ProseScorer) -> Option<
     let mut covered: HashSet<&str> = HashSet::new();
     let mut used = 0;
     for i in scorer.rank(&sentences) {
-        let add = sentences[i].len() + 1;
+        let add = sentences[i].len() + 1 + reserve;
         if !chosen.is_empty() && used + add > budget {
             break;
         }
@@ -101,23 +109,37 @@ fn select<'a>(text: &'a str, budget: usize, scorer: &dyn ProseScorer) -> Option<
     })
 }
 
-// Offload preview: a coverage-ranked index of the block's own sentences.
+// Offload preview: the block's own sentences, verbatim and in order, with every skipped run marked,
+// so a sampled procedure never reads as a complete one.
 pub fn digest(text: &str, budget: usize) -> Option<String> {
-    let sel = select(text, budget, &CoverageScorer)?;
-    let shown: Vec<&str> = sel.chosen.iter().map(|&i| sel.sentences[i]).collect();
-    let label = format!(
-        "{} sentences, {} shown covering {} of {} key terms",
-        sel.sentences.len(),
+    let sel = select(text, budget, GAP.len() + 1, &CoverageScorer)?;
+    let mut out = format!(
+        "{} of {} sentences, verbatim and in order, covering {} of {} key terms",
         sel.chosen.len(),
+        sel.sentences.len(),
         sel.covered,
         sel.total
     );
-    Some(format!("{label}\n{}", shown.join("\n")))
+    let mut next = 0;
+    for &i in &sel.chosen {
+        if i > next {
+            out.push('\n');
+            out.push_str(GAP);
+        }
+        out.push('\n');
+        out.push_str(sel.sentences[i]);
+        next = i + 1;
+    }
+    if next < sel.sentences.len() {
+        out.push('\n');
+        out.push_str(GAP);
+    }
+    Some(out)
 }
 
 // Opt-in working summary: top-ranked sentences inline, the rest recoverable via the marker.
 pub fn summary(text: &str, budget: usize, scorer: &dyn ProseScorer) -> Option<String> {
-    let sel = select(text, budget, scorer)?;
+    let sel = select(text, budget, 0, scorer)?;
     let dropped = sel.sentences.len() - sel.chosen.len();
     if dropped == 0 {
         return None;
@@ -137,7 +159,11 @@ fn sentences(text: &str) -> impl Iterator<Item = &str> {
     let mut start = 0;
     let mut chars = text.char_indices().peekable();
     while let Some((idx, c)) = chars.next() {
-        if matches!(c, '.' | '!' | '?' | '\n') {
+        // A period inside a token (`SKILL.md`, `3.5`) ends no sentence; a line break always does.
+        let ends = c == '\n'
+            || (matches!(c, '.' | '!' | '?')
+                && chars.peek().is_none_or(|&(_, n)| n.is_whitespace()));
+        if ends {
             let end = idx + c.len_utf8();
             let span = text[start..end].trim();
             if !span.is_empty() {
@@ -244,6 +270,58 @@ pub fn shrink(text: &str, spans: &[Span]) -> Option<String> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn a_period_inside_a_token_does_not_split_a_sentence() {
+        let text = "The paragraph of SKILL.md that begins with a title names the other way to share it. \
+Version 3.5 of the tool keeps the same contract for every caller in the module. \
+When a token is missing the gateway returns a 401 and logs the client address today.";
+        let got: Vec<&str> = sentences(text).collect();
+        assert_eq!(got.len(), 3, "{got:?}");
+        assert!(
+            got[0].starts_with("The paragraph of SKILL.md that"),
+            "{:?}",
+            got[0]
+        );
+        assert!(got[1].starts_with("Version 3.5 of"), "{:?}", got[1]);
+    }
+
+    #[test]
+    fn a_digest_keeps_sentences_verbatim_and_marks_every_gap() {
+        let text: String = (0..40)
+            .map(|i| {
+                format!(
+                    "Sentence number {i} explains the distinct handler topic {i} in the module. "
+                )
+            })
+            .collect();
+        let digest = digest(&text, 300).expect("prose digests");
+        let mut lines = digest.lines();
+        let label = lines.next().unwrap();
+        assert!(label.contains("verbatim and in order"), "{label}");
+        let mut seen_gap = false;
+        let mut last_index = None;
+        for line in lines {
+            if line == GAP {
+                seen_gap = true;
+                continue;
+            }
+            assert!(text.contains(line), "a shown sentence is verbatim: {line}");
+            let index: usize = line
+                .trim_start_matches("Sentence number ")
+                .split(' ')
+                .next()
+                .unwrap()
+                .parse()
+                .unwrap();
+            assert!(
+                last_index.is_none_or(|prev| index > prev),
+                "in document order"
+            );
+            last_index = Some(index);
+        }
+        assert!(seen_gap, "a budget that drops sentences marks the gap");
+    }
+
     const PARAGRAPH: &str = "The authentication service validates every request against the session store. \
 Tokens expire after 3600 seconds and are rotated on each privileged action. \
 When a token is missing the gateway returns a 401 and logs the client address. \
@@ -253,7 +331,7 @@ The store is a Redis cluster with three replicas for durability.";
     #[test]
     fn every_shown_sentence_is_literally_in_the_body() {
         let digest = digest(PARAGRAPH, 200).unwrap();
-        for line in digest.lines().skip(1) {
+        for line in digest.lines().skip(1).filter(|l| *l != GAP) {
             assert!(PARAGRAPH.contains(line), "not literal: {line:?}");
         }
     }
