@@ -218,13 +218,30 @@ fn segments_from(content: Content, tool_names: &mut HashMap<String, String>) -> 
                         id: tool_use_id,
                     },
                     original: None,
-                    effective: value_to_text(content),
+                    effective: tool_result_text(content),
                 });
             }
             Block::Unknown => {}
         }
     }
     segments
+}
+
+// A tool result as the model read it: text blocks joined, an image or document named by a short
+// placeholder rather than its base64 payload, which no text codec could compress anyway.
+fn tool_result_text(content: serde_json::Value) -> String {
+    let serde_json::Value::Array(blocks) = content else {
+        return value_to_text(content);
+    };
+    blocks
+        .into_iter()
+        .map(|block| match block["type"].as_str() {
+            Some("text") => block["text"].as_str().unwrap_or_default().to_string(),
+            Some(kind @ ("image" | "document")) => format!("[{kind}]"),
+            _ => block.to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn value_to_text(value: serde_json::Value) -> String {
@@ -336,5 +353,27 @@ impl From<Usage> for Billing {
             cache_write_5m_tokens: w5m,
             cache_write_1h_tokens: w1h,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn a_tool_result_reads_as_the_model_saw_it() {
+        let content = json!([
+            { "type": "text", "text": "line one" },
+            { "type": "image", "source": { "type": "base64", "data": "iVBORw0KGgoAAAANSUhEUg" } },
+            { "type": "text", "text": "line two" }
+        ]);
+        assert_eq!(tool_result_text(content), "line one\n[image]\nline two");
+    }
+
+    #[test]
+    fn a_plain_string_result_is_unchanged() {
+        assert_eq!(tool_result_text(json!("ok\n")), "ok\n");
+        assert_eq!(tool_result_text(serde_json::Value::Null), "");
     }
 }
