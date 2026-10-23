@@ -1,6 +1,6 @@
 {
   "name": "@orchetron/secondwind-darwin-x64",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "secondwind native library for darwin-x64",
   "license": "Apache-2.0",
   "os": [
