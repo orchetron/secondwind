@@ -53,7 +53,8 @@ pub fn watch(home: &Path) -> ExitCode {
     loop {
         let all = events::load(home);
         let s = events::summarize(&all, 0);
-        let saved = s.input_tokens.saturating_sub(s.output_tokens);
+        let gross = s.input_tokens.saturating_sub(s.output_tokens);
+        let saved = s.net_tokens;
         let pct = if s.input_tokens > 0 {
             100.0 * saved as f64 / s.input_tokens as f64
         } else {
@@ -96,14 +97,16 @@ pub fn watch(home: &Path) -> ExitCode {
         out.push_str(&format!("  \u{1b}[2m{rule}\u{1b}[0m\u{1b}[K\n\u{1b}[K\n"));
         out.push_str(&format!("  {:<14}{}\u{1b}[K\n", "blocks", s.blocks));
         out.push_str(&format!(
-            "  {:<14}{}   ({pct:.0}% smaller)\u{1b}[K\n",
+            "  {:<14}{} net   ({pct:.1}% of input)\u{1b}[K\n",
             "tokens saved",
             commas(saved)
         ));
         out.push_str(&format!(
-            "  {:<14}{} tokens lighter, so auto-compact fires that much later (lossless)\u{1b}[K\n",
-            "context wall",
-            commas(saved)
+            "  {:<14}{} gross, {} handed back by {} resolves\u{1b}[K\n",
+            "reopened",
+            commas(gross),
+            commas(s.reopened_tokens),
+            s.reopens
         ));
         out.push_str(&format!("  {:<14}{last}\u{1b}[K\n", "last"));
         out.push_str(&format!(
@@ -707,7 +710,7 @@ html,body{margin:0; background:#0B0D13;}
 
     // ---- count-up with per-element cancellation ----
     function count(el,to,dur,plain){
-      to=Math.round(to);
+      to=plain?Math.round(to*10)/10:Math.round(to);
       var token=(el._ct||0)+1; el._ct=token;
       if(reduce||dur<=0){ el.textContent=fmtN(to,plain); return; }
       var start=null;
@@ -715,12 +718,12 @@ html,body{margin:0; background:#0B0D13;}
         if(el._ct!==token) return;
         if(start===null) start=ts;
         var p=Math.min(1,(ts-start)/dur); p=1-Math.pow(1-p,3);
-        el.textContent=fmtN(Math.round(to*p),plain);
+        el.textContent=fmtN(plain?Math.round(to*p*10)/10:Math.round(to*p),plain);
         if(p<1) requestAnimationFrame(step); else el.textContent=fmtN(to,plain);
       }
       requestAnimationFrame(step);
     }
-    function setNum(el,v,plain){ el._ct=(el._ct||0)+1; el.textContent=fmtN(Math.round(v),plain); }
+    function setNum(el,v,plain){ el._ct=(el._ct||0)+1; el.textContent=fmtN(plain?Math.round(v*10)/10:Math.round(v),plain); }
 
     var selected=null, prevBlocks=0, flashUntil=0, prevVessel="", firstData=true, introUntil=0;
 
@@ -895,9 +898,10 @@ html,body{margin:0; background:#0B0D13;}
     }
 
     function render(d,first){
-      var inTok=d.input_tokens||0, outTok=d.output_tokens||0, saved=Math.max(0,inTok-outTok);
+      var inTok=d.input_tokens||0, outTok=d.output_tokens||0, reopened=d.reopened_tokens||0, reopens=d.reopens||0;
+      var saved=Math.max(0,inTok-outTok-reopened);
       var blocks=d.blocks||0, verified=d.verified||0, inline=d.inline||0, off=d.offloaded||0, kept=d.kept||0;
-      var pct = inTok?Math.round(saved/inTok*100):0;
+      var pct = inTok?Math.round(saved/inTok*1000)/10:0;
       var keptPct = blocks?(verified/blocks)*100:100;
       var keptStr = keptPct===100?"100":keptPct.toFixed(1);
 
@@ -933,7 +937,7 @@ html,body{margin:0; background:#0B0D13;}
       }
 
       // ledger
-      $("ledger-note").textContent = fmtTok(saved);
+      $("ledger-note").textContent = fmtTok(saved)+(reopens?" net, "+fmtTok(reopened)+" handed back by "+reopens+" resolve"+(reopens===1?"":"s"):"");
       buildCols(d.saved_hour||0, d.saved_today||0, d.saved_week||0, d.saved_month||0, saved);
       drawSpark(d.curve, saved);
 

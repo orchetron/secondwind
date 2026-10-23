@@ -307,6 +307,7 @@ fn rewrite_request(session: *mut Session, input: Option<&[u8]>) -> String {
                     tenant: String::new(),
                     kept_reason: block.kept_reason.clone(),
                     req_id: String::new(),
+                    reopened_tokens: 0,
                 },
             );
         }

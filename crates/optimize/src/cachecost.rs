@@ -1,6 +1,7 @@
 use secondwind_core::{SegmentKind, Trace};
 use secondwind_ledger::Rates;
 
+use crate::tokens::TokenCounter;
 use crate::{Optimizer, Outcome};
 
 // Net dollars a compression removes, priced two ways: naive (every resend billed as
@@ -26,7 +27,14 @@ impl CacheSavings {
     }
 }
 
-pub fn estimate(trace: &Trace, rates: &Rates) -> CacheSavings {
+// Counts with the optimizer's own counter, so the estimate is in the unit the ledger books.
+// Gross: a block a later turn resolves is not subtracted here, since a trace does not record it.
+pub fn estimate(
+    trace: &Trace,
+    rates: &Rates,
+    optimizer: &mut Optimizer,
+    counter: &dyn TokenCounter,
+) -> CacheSavings {
     let input = rates.input / 1e6;
     let cache_read = rates.cache_read / 1e6;
     let turns = trace.turns.len();
@@ -38,8 +46,8 @@ pub fn estimate(trace: &Trace, rates: &Rates) -> CacheSavings {
                 continue;
             }
             let original = segment.original.as_deref().unwrap_or(&segment.effective);
-            let before = tokens(original.len());
-            let after = tokens(compressed_len(original));
+            let before = counter.count(original) as u64;
+            let after = counter.count(&compressed(optimizer, original)) as u64;
             if after >= before {
                 continue;
             }
@@ -57,15 +65,11 @@ pub fn estimate(trace: &Trace, rates: &Rates) -> CacheSavings {
     out
 }
 
-fn tokens(bytes: usize) -> u64 {
-    (bytes / 4) as u64
-}
-
-fn compressed_len(raw: &str) -> usize {
-    match Optimizer::default().compress_block(raw) {
-        Outcome::Compressed { wire, .. } => wire.len(),
-        Outcome::Offloaded { stub, .. } => stub.len(),
-        Outcome::KeptVerbatim { .. } => raw.len(),
+fn compressed(optimizer: &mut Optimizer, raw: &str) -> String {
+    match optimizer.compress_block(raw) {
+        Outcome::Compressed { wire, .. } => wire,
+        Outcome::Offloaded { stub, .. } => stub,
+        Outcome::KeptVerbatim { .. } => raw.to_string(),
     }
 }
 
@@ -133,7 +137,12 @@ mod tests {
             tool_turn(1, "small"),
             tool_turn(2, "small"),
         ]);
-        let s = estimate(&t, &rates());
+        let s = estimate(
+            &t,
+            &rates(),
+            &mut Optimizer::default(),
+            &crate::tokens::ByteCounter,
+        );
         assert_eq!(s.blocks, 1);
         assert!(s.compressed_tokens < s.original_tokens);
         assert!(s.naive_usd > 0.0);
@@ -143,7 +152,12 @@ mod tests {
 
     #[test]
     fn an_incompressible_block_is_skipped() {
-        let s = estimate(&trace(vec![tool_turn(0, "short")]), &rates());
+        let s = estimate(
+            &trace(vec![tool_turn(0, "short")]),
+            &rates(),
+            &mut Optimizer::default(),
+            &crate::tokens::ByteCounter,
+        );
         assert_eq!(s.blocks, 0);
         assert_eq!(s.naive_usd, 0.0);
     }

@@ -920,6 +920,7 @@ fn child_exit(status: std::process::ExitStatus) -> ExitCode {
 }
 
 fn exec(home: &Path, script: Option<&str>, argv: &[String]) -> ExitCode {
+    use secondwind_optimize::tokens::TokenCounter;
     use secondwind_optimize::{Optimizer, Outcome};
     use std::process::Stdio;
 
@@ -963,10 +964,9 @@ fn exec(home: &Path, script: Option<&str>, argv: &[String]) -> ExitCode {
     let original = stdout.len();
 
     let model = configured_model();
+    let counter = std::sync::Arc::new(secondwind_optimize::tokens::Tiktoken::cl100k());
     let mut optimizer = Optimizer::default()
-        .with_counter(std::sync::Arc::new(
-            secondwind_optimize::tokens::Tiktoken::cl100k(),
-        ))
+        .with_counter(counter.clone())
         .with_model(&model)
         .with_store(secondwind_optimize::offload::Store::persistent(
             proxy::store_dir(home),
@@ -1013,15 +1013,13 @@ fn exec(home: &Path, script: Option<&str>, argv: &[String]) -> ExitCode {
     }
 
     print!("{effective}");
-    let pct = if original == 0 {
+    let (before, after) = (counter.count(&stdout), counter.count(&effective));
+    let pct = if before == 0 {
         0.0
     } else {
-        100.0 * (1.0 - effective.len() as f64 / original as f64)
+        100.0 * (1.0 - after as f64 / before as f64)
     };
-    eprintln!(
-        "\nsecondwind: {original} -> {} bytes, {pct:.1}% smaller ({note})",
-        effective.len()
-    );
+    eprintln!("\nsecondwind: {before} -> {after} tokens, {pct:.1}% smaller ({note})");
 
     child_exit(output.status)
 }
@@ -1072,6 +1070,7 @@ fn record_event(
             tenant: String::new(),
             kept_reason: String::new(),
             req_id: String::new(),
+            reopened_tokens: 0,
         },
     );
 }
@@ -1089,6 +1088,8 @@ fn cache_savings(home: &Path, limit: usize) -> ExitCode {
     use secondwind_optimize::cachecost::{CacheSavings, estimate};
 
     const DEFAULT_MODEL: &str = "claude-sonnet-4-5";
+    let counter = std::sync::Arc::new(secondwind_optimize::tokens::Tiktoken::cl100k());
+    let mut optimizer = secondwind_optimize::Optimizer::default().with_counter(counter.clone());
     let mut total = CacheSavings::default();
     let mut traces = 0usize;
     for source in secondwind_sources::all() {
@@ -1111,7 +1112,7 @@ fn cache_savings(home: &Path, limit: usize) -> ExitCode {
                 let rates = secondwind_ledger::rates_for(model)
                     .or_else(|| secondwind_ledger::rates_for(DEFAULT_MODEL));
                 if let Some(rates) = rates {
-                    total.merge(&estimate(trace, rates));
+                    total.merge(&estimate(trace, rates, &mut optimizer, counter.as_ref()));
                 }
                 traces += 1;
             }
@@ -1130,6 +1131,7 @@ fn cache_savings(home: &Path, limit: usize) -> ExitCode {
         "compressed_tokens": total.compressed_tokens,
         "tokens_removed": total.original_tokens.saturating_sub(total.compressed_tokens),
         "token_reduction": token_reduction,
+        "counts": "cl100k tokens, gross: resolves a later turn made are not subtracted",
     });
     println!(
         "{}",
