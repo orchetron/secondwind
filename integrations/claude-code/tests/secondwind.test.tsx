@@ -125,3 +125,56 @@ test('compression is off by default and the pane button turns it on for the sess
   const off2 = await $.tool.call({ tool: 'Bash', command: 'cat big.txt' })
   expect((off2.result as { stdout: string }).stdout).toBe(BIG)
 })
+
+const SURFACES = ['terminal', 'desktop'] as const
+
+async function percentTile($: Parameters<Parameters<typeof test>[1]>[0], surface: (typeof SURFACES)[number]) {
+  const ui = await $.ui.mount({ ...PANE, surface })
+  const value = await ui.find({ type: 'Text', text: /%$/ })
+  const toggle = await ui.find({ key: 'toggle' })
+  const hint = await ui.find({ type: 'Text', text: /lands here|Turn on to compress/ })
+  await ui.unmount()
+  return { value, toggle, hint }
+}
+
+test('off: the pane offers to turn on and says what it would do', async ($, on) => {
+  engine(on, STUB)
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  for (const surface of SURFACES) {
+    const { toggle, hint, value } = await percentTile($, surface)
+    expect(toggle?.text).toContain('turn on')
+    expect(hint?.text).toBe('Turn on to compress Bash output in this session.')
+    expect(value?.props.color).toBeUndefined()
+  }
+})
+
+test('on and empty: the pane says where output will land', async ($, on) => {
+  engine(on, STUB)
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await $.command.run({ command: 'secondwind', args: 'on' })
+  for (const surface of SURFACES) {
+    const { toggle, hint, value } = await percentTile($, surface)
+    expect(toggle?.text).toContain('turn off')
+    expect(hint?.text).toBe('Bash output over 512 bytes lands here.')
+    expect(value?.text).toBe('0%')
+  }
+})
+
+test('a win draws the net in the accent, a loss in red', async ($, on) => {
+  engine(on, STUB)
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await $.command.run({ command: 'secondwind', args: 'on' })
+  await $.tool.call({ tool: 'Bash', command: 'cat big.txt' })
+  for (const surface of SURFACES) {
+    const { value } = await percentTile($, surface)
+    expect(value?.text).not.toContain('-')
+    expect(value?.props.color).toBe('claude')
+  }
+
+  await $.tool.call({ tool: 'mcp__secondwind__recover', marker: '<<swload:0123456789abcdef>>' })
+  for (const surface of SURFACES) {
+    const { value } = await percentTile($, surface)
+    expect(value?.text).toContain('-')
+    expect(value?.props.color).toBe('error')
+  }
+})
