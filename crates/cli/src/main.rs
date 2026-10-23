@@ -120,6 +120,11 @@ enum Command {
             help = "Fit reopen rates on half the sessions, show the gate on the other half, write ~/.secondwind/policy.json"
         )]
         learn: bool,
+        #[arg(
+            long,
+            help = "Pass the user's latest message as the query, as the proxy does"
+        )]
+        query: bool,
     },
     #[command(
         about = "Estimate the tokens the optimizer would remove across your discovered traffic"
@@ -325,7 +330,8 @@ fn main() -> ExitCode {
             blocks,
             gate,
             learn,
-        }) => return eval(&home, limit, blocks.as_deref(), gate, learn),
+            query,
+        }) => return eval(&home, limit, blocks.as_deref(), gate, learn, query),
         Some(Command::CacheSavings { limit }) => return cache_savings(&home, limit),
         Some(Command::Exec { script, command }) => {
             return exec(&home, script.as_deref(), &command);
@@ -886,7 +892,7 @@ fn reopen_policy(home: &Path) -> (secondwind_optimize::policy::ReopenPolicy, &'s
 fn replay(
     home: &Path,
     limit: usize,
-    gate: Option<&secondwind_optimize::policy::ReopenPolicy>,
+    options: secondwind_optimize::counterfactual::EvalOptions,
     only: impl Fn(usize) -> bool,
     mut each: impl FnMut(usize, Vec<secondwind_optimize::counterfactual::BlockOutcome>),
 ) -> usize {
@@ -918,7 +924,7 @@ fn replay(
                     trace,
                     &mut optimizer,
                     counter.as_ref(),
-                    gate,
+                    options,
                 );
                 each(traces, blocks);
             }
@@ -927,7 +933,16 @@ fn replay(
     files_read
 }
 
-fn eval(home: &Path, limit: usize, blocks: Option<&Path>, gate: bool, learn: bool) -> ExitCode {
+fn eval(
+    home: &Path,
+    limit: usize,
+    blocks: Option<&Path>,
+    gate: bool,
+    learn: bool,
+    query: bool,
+) -> ExitCode {
+    use secondwind_optimize::counterfactual::EvalOptions;
+
     use std::io::Write;
 
     if learn {
@@ -946,7 +961,10 @@ fn eval(home: &Path, limit: usize, blocks: Option<&Path>, gate: bool, learn: boo
     let files_read = replay(
         home,
         limit,
-        gate.then_some(&policy),
+        EvalOptions {
+            gate: gate.then_some(&policy),
+            query,
+        },
         |_| true,
         |trace, outcomes| {
             total.sessions += 1;
@@ -981,6 +999,7 @@ fn eval(home: &Path, limit: usize, blocks: Option<&Path>, gate: bool, learn: boo
     let result = serde_json::json!({
         "files_read": files_read,
         "gate": if gate { source } else { "off" },
+        "query": query,
         "total": total.json(),
         "by_class": by_class,
     });
@@ -1001,7 +1020,7 @@ fn eval_learn(home: &Path, limit: usize) -> ExitCode {
     replay(
         home,
         limit,
-        None,
+        Default::default(),
         |_| true,
         |trace, outcomes| {
             if trace % 2 == 0 {
@@ -1014,10 +1033,14 @@ fn eval_learn(home: &Path, limit: usize) -> ExitCode {
     );
     let policy = ReopenPolicy::learn(&learned_from, 30);
     let mut with = Tally::default();
+    let options = secondwind_optimize::counterfactual::EvalOptions {
+        gate: Some(&policy),
+        query: false,
+    };
     replay(
         home,
         limit,
-        Some(&policy),
+        options,
         |trace| trace % 2 == 1,
         |_, outcomes| {
             with.sessions += 1;

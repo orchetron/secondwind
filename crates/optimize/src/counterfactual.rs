@@ -149,6 +149,13 @@ pub struct BlockOutcome {
     pub turns_after: usize,
 }
 
+#[derive(Default, Clone, Copy)]
+pub struct EvalOptions<'a> {
+    pub gate: Option<&'a crate::policy::ReopenPolicy>,
+    // Pass the user's latest message as the query, as the proxy does with live traffic.
+    pub query: bool,
+}
+
 // Runs the optimizer over every tool result in a trace. Takes a fresh optimizer per trace so the
 // offload store never outlives it. With a gate, a block whose predicted reopen rate is at or over its
 // threshold is compressed with offloading off, so only inline codecs apply. A hidden token counts as needed only when the assistant uses it
@@ -158,8 +165,25 @@ pub fn evaluate(
     trace: &Trace,
     optimizer: &mut crate::Optimizer,
     counter: &dyn crate::tokens::TokenCounter,
-    gate: Option<&crate::policy::ReopenPolicy>,
+    options: EvalOptions,
 ) -> Vec<BlockOutcome> {
+    let gate = options.gate;
+    let mut prompt = vec![""; trace.turns.len()];
+    let mut latest = "";
+    for (ti, turn) in trace.turns.iter().enumerate() {
+        if turn.role == Role::User {
+            let text = turn
+                .segments
+                .iter()
+                .filter(|s| matches!(s.kind, SegmentKind::Text))
+                .map(|s| s.effective.as_str())
+                .find(|t| !t.trim().is_empty());
+            if let Some(text) = text {
+                latest = text;
+            }
+        }
+        prompt[ti] = latest;
+    }
     let first_seen = first_seen_index(trace);
     let assistant_tokens = assistant_token_index(trace);
     let supplied = supply_index(trace);
@@ -221,15 +245,20 @@ pub fn evaluate(
             }
             // Faithful is checked here independently of the optimizer's own gate: an inline wire
             // must decode to the certified content, an offload must resolve to the original.
-            let (outcome, sent, hidden_from, faithful) = match optimizer.compress_block(body) {
+            let compressed = if options.query && !prompt[ti].is_empty() {
+                optimizer.compress_block_with_query(body, prompt[ti])
+            } else {
+                optimizer.compress_block(body)
+            };
+            let (outcome, sent, hidden_from, faithful) = match compressed {
                 crate::Outcome::Compressed { wire, .. } => {
                     let ok = crate::certificate::verify(&wire, &crate::certificate::certify(body));
                     ("inline", wire, None, ok)
                 }
                 crate::Outcome::Offloaded { stub, marker, .. } => {
-                    let ok = optimizer
-                        .resolve(&marker)
-                        .is_some_and(|back| same_content(&back, body));
+                    let ok = optimizer.resolve(&marker).is_some_and(|back| {
+                        same_content(&back, body) || split_covers(&stub, &back, body)
+                    });
                     ("offload", stub.clone(), Some(stub), ok)
                 }
                 crate::Outcome::KeptVerbatim { .. } => ("verbatim", body.to_string(), None, true),
@@ -257,6 +286,38 @@ pub fn evaluate(
         }
     }
     out
+}
+
+// A relevance split keeps some rows inline in the stub and stores the rest: faithful when the inline
+// rows and the stored ones are, together, exactly the original's rows.
+fn split_covers(stub: &str, back: &str, original: &str) -> bool {
+    use serde_json::Value;
+    let Some(cut) = stub.rfind("\n[") else {
+        return false;
+    };
+    let inline = &stub[..cut];
+    let rows = |v: Option<Value>| -> Option<Vec<String>> {
+        let mut rows: Vec<String> = v?
+            .as_array()?
+            .iter()
+            .map(crate::atom::canonicalize)
+            .collect();
+        rows.sort();
+        Some(rows)
+    };
+    let shown = serde_json::from_str::<Value>(inline)
+        .ok()
+        .or_else(|| crate::columnar::decode(inline));
+    let (Some(mut shown), Some(stored), Some(whole)) = (
+        rows(shown),
+        rows(serde_json::from_str(back).ok()),
+        rows(serde_json::from_str(original).ok()),
+    ) else {
+        return false;
+    };
+    shown.extend(stored);
+    shown.sort();
+    shown == whole
 }
 
 // Byte-identical text, or JSON holding the same value; an offload stores JSON canonicalized.
@@ -495,7 +556,7 @@ mod tests {
             &trace(turns),
             &mut optimizer,
             &crate::tokens::ByteCounter,
-            None,
+            EvalOptions::default(),
         )
     }
 
@@ -535,7 +596,10 @@ mod tests {
             ]),
             &mut optimizer,
             &crate::tokens::ByteCounter,
-            Some(&policy),
+            EvalOptions {
+                gate: Some(&policy),
+                ..EvalOptions::default()
+            },
         );
         assert_ne!(out[0].outcome, "offload");
         assert!(!out[0].reopened, "nothing was hidden, so nothing to reopen");
@@ -574,6 +638,36 @@ mod tests {
             assert!(block.faithful, "{} came back different", block.outcome);
         }
         assert!(out.iter().any(|b| b.outcome != "verbatim"));
+    }
+
+    #[test]
+    fn a_relevance_split_is_faithful_across_stub_and_store() {
+        let rows: Vec<String> = (0..40)
+            .map(|i| {
+                let status = if i % 7 == 0 { "failing" } else { "healthy" };
+                format!(r#"{{"id":{i},"name":"service number {i}","status":"{status}","region":"zone-{}"}}"#, i % 3)
+            })
+            .collect();
+        let body = format!("[{}]", rows.join(","));
+        let mut optimizer = crate::Optimizer::default();
+        let crate::Outcome::Offloaded { stub, marker, .. } =
+            optimizer.compress_block_with_query(&body, "which services are failing")
+        else {
+            panic!("expected a relevance split");
+        };
+        let back = optimizer.resolve(&marker).unwrap();
+        assert!(!same_content(&back, &body), "the store holds only the rest");
+        assert!(split_covers(&stub, &back, &body));
+        let missing = format!("[{}]", rows[1..].join(","));
+        assert!(
+            !split_covers(&stub, &back, &missing),
+            "a row too many is caught"
+        );
+        let extra = format!("[{},{}]", rows.join(","), rows[0]);
+        assert!(
+            !split_covers(&stub, &back, &extra),
+            "a row missing is caught"
+        );
     }
 
     #[test]
