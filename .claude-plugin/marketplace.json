@@ -1,0 +1,11 @@
+{
+  "name": "secondwind",
+  "owner": { "name": "orchetron" },
+  "plugins": [
+    {
+      "name": "secondwind",
+      "source": "./integrations/claude-code",
+      "description": "Compress large Bash output through secondwind inside Claude Code, recover offloaded blocks, and watch net savings in a pane"
+    }
+  ]
+}

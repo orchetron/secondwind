@@ -63,6 +63,13 @@ npm install secondwind      # Node / Bun library and adapters
 Rather build the CLI from source? `cargo install --git https://github.com/orchetron/secondwind
 secondwind` (needs [Rust](https://rustup.rs)), or clone this repo and `cargo install --path crates/cli`.
 
+**Claude Code**: with the binary installed, the mod in [`integrations/claude-code`](integrations/claude-code)
+compresses Bash output inside Claude Code itself, per session, with a pane of net savings:
+
+```
+/plugin install secondwind --marketplace orchetron/secondwind
+```
+
 ## Quickstart
 
 Once the CLI is installed, two commands wire it up; then use your agent exactly as you always do:
