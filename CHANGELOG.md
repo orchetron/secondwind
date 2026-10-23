@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- A block whose offload preview would tell the model too little now stays in view: prose, whose
+  digest was reopened 34 to 80% of the time for no net saving, and output under 2 KB whose only
+  preview is its first line. On held-out recorded sessions this halves reopens on the Claude Code
+  mod's path, from 4.5 to 2.3 per session, and lowers its context saving from 8.6% to 5.2% of tool
+  output. Repeats, JSON relevance splits and opt-in prose mode offload as before.
+- `secondwind eval --blocks` records each offload's preview kind.
+
 ## v0.5.0
 
 ### Upgrade notes

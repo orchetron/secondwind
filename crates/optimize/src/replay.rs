@@ -511,11 +511,9 @@ mod tests {
 
     fn offloadable_result() -> String {
         let mut out = String::new();
-        for i in 0..12 {
+        for i in 0..40 {
             out.push_str(&format!(
-                "The handler_{i} module validates every inbound request against the shared session store before dispatch. \
-When the token has expired the gateway returns a rejection and records the client address for the audit trail. \
-"
+                "fn handler_{i}(request: &Request) -> Result<Response> {{ validate(request, {i}).and_then(dispatch) }}\n"
             ));
         }
         out

@@ -97,6 +97,8 @@ pub enum KeptReason {
     DetectorFired,
     // Duplicate JSON keys: ambiguous, so kept verbatim rather than compressed.
     DuplicateKeys,
+    // Its offload preview would tell the model too little (offload::worth_offloading).
+    ThinPreview,
 }
 
 impl KeptReason {
@@ -114,6 +116,7 @@ impl KeptReason {
             KeptReason::NoNetSaving(netcost::Reason::UnknownModel) => "no_saving_unknown_model",
             KeptReason::DetectorFired => "detector",
             KeptReason::DuplicateKeys => "duplicate_keys",
+            KeptReason::ThinPreview => "thin_preview",
         }
     }
 }
@@ -701,6 +704,11 @@ impl Optimizer {
                 reason: KeptReason::NotApplicable,
             };
         }
+        if !offload::worth_offloading(raw) {
+            return Outcome::KeptVerbatim {
+                reason: KeptReason::ThinPreview,
+            };
+        }
         let offloaded = match self.store.offload(raw) {
             Ok(offloaded) => offloaded,
             Err(_) => {
@@ -1062,7 +1070,7 @@ mod tests {
         // when allowed; without a resolver stays verbatim rather than emit a marker nothing could resolve.
         let mut seed = 0xabcd_1234u32;
         let mut raw = String::new();
-        for _ in 0..30 {
+        for _ in 0..80 {
             seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
             let a = seed;
             seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);

@@ -991,7 +991,13 @@ mod tests {
         // Default guard: a fresh block with no content-covering preview is kept verbatim (and booked),
         // not offloaded into a resolve the model would need this turn.
         let resolver = "mcp__secondwind__resolve";
-        let raw = "The service validates every request and logs it. ".repeat(40);
+        let raw: String = (0..40)
+            .map(|i| {
+                format!(
+                    "fn handler_{i}(request: &Request) -> Response {{ validate(request, {i}) }}\n"
+                )
+            })
+            .collect();
         let mut body = json!({
             "tools": [{"name": resolver, "description": "swload fetch"}],
             "messages": [{"role": "user", "content": [
