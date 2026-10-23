@@ -382,7 +382,7 @@ fn preview(canonical: &str) -> String {
     }
     if let Some(digest) = crate::prose::digest(canonical, crate::prose::budget(canonical.len())) {
         return format!(
-            "[{} bytes offloaded, prose digest, partial and not verbatim, call resolve for exact text]\n{digest}",
+            "[{} bytes offloaded, prose digest: some sentences verbatim, each \u{2026} a gap, call resolve for the full text]\n{digest}",
             canonical.len()
         );
     }
