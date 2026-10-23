@@ -109,6 +109,17 @@ enum Command {
             help = "Also write one JSON line per tool result"
         )]
         blocks: Option<PathBuf>,
+        #[arg(
+            long,
+            help = "Replay with the reopen gate the optimizer applies (learned table, else built-in)"
+        )]
+        gate: bool,
+        #[arg(
+            long,
+            conflicts_with_all = ["gate", "blocks"],
+            help = "Fit reopen rates on half the sessions, show the gate on the other half, write ~/.secondwind/policy.json"
+        )]
+        learn: bool,
     },
     #[command(
         about = "Estimate the tokens the optimizer would remove across your discovered traffic"
@@ -309,7 +320,12 @@ fn main() -> ExitCode {
         }) => return optimize(&input, tokens, prose),
         Some(Command::Verify { wire, certificate }) => return verify(&wire, &certificate),
         Some(Command::ReopenRate { limit }) => return reopen_rate(&home, limit),
-        Some(Command::Eval { limit, blocks }) => return eval(&home, limit, blocks.as_deref()),
+        Some(Command::Eval {
+            limit,
+            blocks,
+            gate,
+            learn,
+        }) => return eval(&home, limit, blocks.as_deref(), gate, learn),
         Some(Command::CacheSavings { limit }) => return cache_savings(&home, limit),
         Some(Command::Exec { script, command }) => {
             return exec(&home, script.as_deref(), &command);
@@ -799,69 +815,83 @@ fn verify(wire: &PathBuf, certificate: &str) -> ExitCode {
 }
 
 // Net assumes a reopened offload is fetched back whole, the costliest case; a slice costs less.
-fn eval(home: &Path, limit: usize, blocks: Option<&Path>) -> ExitCode {
-    use secondwind_optimize::counterfactual::{BlockOutcome, evaluate};
-    use std::io::Write;
+#[derive(Default)]
+struct Tally {
+    sessions: u64,
+    blocks: u64,
+    inline: u64,
+    offload: u64,
+    reopened: u64,
+    raw: u64,
+    sent: u64,
+    back: u64,
+    unfaithful: u64,
+}
 
-    #[derive(Default)]
-    struct Tally {
-        blocks: u64,
-        inline: u64,
-        offload: u64,
-        reopened: u64,
-        raw: u64,
-        sent: u64,
-        back: u64,
-        unfaithful: u64,
-    }
-    impl Tally {
-        fn add(&mut self, b: &BlockOutcome) {
-            self.blocks += 1;
-            if !b.faithful {
-                self.unfaithful += 1;
-            }
-            self.raw += b.raw_tokens;
-            self.sent += b.sent_tokens;
-            match b.outcome {
-                "inline" => self.inline += 1,
-                "offload" => self.offload += 1,
-                _ => {}
-            }
-            if b.reopened {
-                self.reopened += 1;
-                self.back += b.raw_tokens;
-            }
+impl Tally {
+    fn add(&mut self, b: &secondwind_optimize::counterfactual::BlockOutcome) {
+        self.blocks += 1;
+        self.unfaithful += u64::from(!b.faithful);
+        self.raw += b.raw_tokens;
+        self.sent += b.sent_tokens;
+        match b.outcome {
+            "inline" => self.inline += 1,
+            "offload" => self.offload += 1,
+            _ => {}
         }
-        fn json(&self) -> serde_json::Value {
-            let net = self.raw as i64 - self.sent as i64 - self.back as i64;
-            let ratio = |a: f64, b: u64| if b == 0 { 0.0 } else { a / b as f64 };
-            serde_json::json!({
-                "blocks": self.blocks,
-                "inline": self.inline,
-                "offloaded": self.offload,
-                "reopened": self.reopened,
-                "reopen_rate": ratio(self.reopened as f64, self.offload),
-                "raw_tokens": self.raw,
-                "sent_tokens": self.sent,
-                "back_tokens": self.back,
-                "net_tokens": net,
-                "net_share": ratio(net as f64, self.raw),
-                "unfaithful": self.unfaithful,
-            })
+        if b.reopened {
+            self.reopened += 1;
+            self.back += b.raw_tokens;
         }
     }
 
+    fn json(&self) -> serde_json::Value {
+        let net = self.raw as i64 - self.sent as i64 - self.back as i64;
+        let ratio = |a: f64, b: u64| if b == 0 { 0.0 } else { a / b as f64 };
+        serde_json::json!({
+            "blocks": self.blocks,
+            "inline": self.inline,
+            "offloaded": self.offload,
+            "reopened": self.reopened,
+            "reopen_rate": ratio(self.reopened as f64, self.offload),
+            "reopens_per_session": ratio(self.reopened as f64, self.sessions),
+            "raw_tokens": self.raw,
+            "sent_tokens": self.sent,
+            "back_tokens": self.back,
+            "net_tokens": net,
+            "net_share": ratio(net as f64, self.raw),
+            "unfaithful": self.unfaithful,
+        })
+    }
+}
+
+fn policy_path(home: &Path) -> PathBuf {
+    home.join(".secondwind").join("policy.json")
+}
+
+// The policy the optimizer applies: the table `eval --learn` fitted, else the built-in one.
+fn reopen_policy(home: &Path) -> (secondwind_optimize::policy::ReopenPolicy, &'static str) {
+    use secondwind_optimize::policy::ReopenPolicy;
+    match std::fs::read_to_string(policy_path(home))
+        .ok()
+        .and_then(|text| ReopenPolicy::from_json(&text))
+    {
+        Some(policy) => (policy, "learned"),
+        None => (ReopenPolicy::builtin(), "built-in"),
+    }
+}
+
+// Every discovered trace in a stable order, numbered from 1; `each` gets the blocks of the traces
+// `only` admits. Returns the number of files read.
+fn replay(
+    home: &Path,
+    limit: usize,
+    gate: Option<&secondwind_optimize::policy::ReopenPolicy>,
+    only: impl Fn(usize) -> bool,
+    mut each: impl FnMut(usize, Vec<secondwind_optimize::counterfactual::BlockOutcome>),
+) -> usize {
     let counter = std::sync::Arc::new(secondwind_optimize::tokens::Tiktoken::cl100k());
-    let mut dump = match blocks.map(std::fs::File::create).transpose() {
-        Ok(file) => file.map(std::io::BufWriter::new),
-        Err(err) => {
-            eprintln!("secondwind eval: {err}");
-            return ExitCode::FAILURE;
-        }
-    };
     let model = configured_model();
-    let mut total = Tally::default();
-    let mut by_class: BTreeMap<String, Tally> = BTreeMap::new();
     let mut files_read = 0usize;
     let mut traces = 0usize;
     for source in secondwind_sources::all() {
@@ -878,27 +908,65 @@ fn eval(home: &Path, limit: usize, blocks: Option<&Path>) -> ExitCode {
             files_read += 1;
             for trace in &outcome.traces {
                 traces += 1;
+                if !only(traces) {
+                    continue;
+                }
                 let mut optimizer = secondwind_optimize::Optimizer::default()
                     .with_counter(counter.clone())
                     .with_model(&model);
-                for block in evaluate(trace, &mut optimizer, counter.as_ref()) {
-                    total.add(&block);
-                    by_class.entry(block.class.clone()).or_default().add(&block);
-                    if let Some(out) = dump.as_mut() {
-                        let line = serde_json::json!({
-                            "trace": traces, "turn": block.turn, "tool": block.tool,
-                            "class": block.class, "shape": block.shape,
-                            "outcome": block.outcome, "bytes": block.raw_bytes,
-                            "raw": block.raw_tokens, "sent": block.sent_tokens,
-                            "reopened": block.reopened, "faithful": block.faithful,
-                            "ctx": block.context_tokens, "after": block.turns_after,
-                        });
-                        let _ = writeln!(out, "{line}");
-                    }
-                }
+                let blocks = secondwind_optimize::counterfactual::evaluate(
+                    trace,
+                    &mut optimizer,
+                    counter.as_ref(),
+                    gate,
+                );
+                each(traces, blocks);
             }
         }
     }
+    files_read
+}
+
+fn eval(home: &Path, limit: usize, blocks: Option<&Path>, gate: bool, learn: bool) -> ExitCode {
+    use std::io::Write;
+
+    if learn {
+        return eval_learn(home, limit);
+    }
+    let mut dump = match blocks.map(std::fs::File::create).transpose() {
+        Ok(file) => file.map(std::io::BufWriter::new),
+        Err(err) => {
+            eprintln!("secondwind eval: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let (policy, source) = reopen_policy(home);
+    let mut total = Tally::default();
+    let mut by_class: BTreeMap<String, Tally> = BTreeMap::new();
+    let files_read = replay(
+        home,
+        limit,
+        gate.then_some(&policy),
+        |_| true,
+        |trace, outcomes| {
+            total.sessions += 1;
+            for block in outcomes {
+                total.add(&block);
+                by_class.entry(block.class.clone()).or_default().add(&block);
+                if let Some(out) = dump.as_mut() {
+                    let line = serde_json::json!({
+                        "trace": trace, "turn": block.turn, "tool": block.tool,
+                        "class": block.class, "shape": block.shape,
+                        "outcome": block.outcome, "bytes": block.raw_bytes,
+                        "raw": block.raw_tokens, "sent": block.sent_tokens,
+                        "reopened": block.reopened, "faithful": block.faithful,
+                        "ctx": block.context_tokens, "after": block.turns_after,
+                    });
+                    let _ = writeln!(out, "{line}");
+                }
+            }
+        },
+    );
 
     let mut classes: Vec<_> = by_class.into_iter().collect();
     classes.sort_by_key(|(_, t)| std::cmp::Reverse(t.raw));
@@ -912,8 +980,72 @@ fn eval(home: &Path, limit: usize, blocks: Option<&Path>) -> ExitCode {
         .collect();
     let result = serde_json::json!({
         "files_read": files_read,
+        "gate": if gate { source } else { "off" },
         "total": total.json(),
         "by_class": by_class,
+    });
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&result).unwrap_or_default()
+    );
+    ExitCode::SUCCESS
+}
+
+// Fits reopen rates on the even-numbered sessions, replays the odd ones with and without the gate,
+// and writes the table only after showing what it does on sessions it never saw.
+fn eval_learn(home: &Path, limit: usize) -> ExitCode {
+    use secondwind_optimize::policy::ReopenPolicy;
+
+    let mut learned_from = Vec::new();
+    let mut without = Tally::default();
+    replay(
+        home,
+        limit,
+        None,
+        |_| true,
+        |trace, outcomes| {
+            if trace % 2 == 0 {
+                learned_from.extend(outcomes);
+            } else {
+                without.sessions += 1;
+                outcomes.iter().for_each(|b| without.add(b));
+            }
+        },
+    );
+    let policy = ReopenPolicy::learn(&learned_from, 30);
+    let mut with = Tally::default();
+    replay(
+        home,
+        limit,
+        Some(&policy),
+        |trace| trace % 2 == 1,
+        |_, outcomes| {
+            with.sessions += 1;
+            outcomes.iter().for_each(|b| with.add(b));
+        },
+    );
+
+    let path = policy_path(home);
+    let written = path
+        .parent()
+        .map(std::fs::create_dir_all)
+        .transpose()
+        .and_then(|_| {
+            std::fs::write(
+                &path,
+                serde_json::to_string_pretty(&policy).unwrap_or_default(),
+            )
+        });
+    if let Err(err) = written {
+        eprintln!("secondwind eval: {}: {err}", path.display());
+        return ExitCode::FAILURE;
+    }
+    let result = serde_json::json!({
+        "policy": path.display().to_string(),
+        "threshold": policy.threshold,
+        "classes": policy.classes.len(),
+        "learned_from_offloads": learned_from.iter().filter(|b| b.outcome == "offload").count(),
+        "held_out": { "without_gate": without.json(), "with_gate": with.json() },
     });
     println!(
         "{}",
@@ -1110,6 +1242,17 @@ fn exec(home: &Path, script: Option<&str>, argv: &[String]) -> ExitCode {
             proxy::store_dir(home),
             proxy::OFFLOAD_TTL,
         ));
+    let shown = script.map_or_else(|| argv.join(" "), str::to_string);
+    let class = secondwind_optimize::counterfactual::command_class(
+        "Bash",
+        Some(&serde_json::json!({ "command": shown }).to_string()),
+    );
+    if !reopen_policy(home)
+        .0
+        .allows_offload(&class, counter.count(&stdout) as u64)
+    {
+        optimizer.set_offload_mode(secondwind_optimize::OffloadMode::Off);
+    }
     let (effective, note, transform, saved_usd, inline) = match optimizer.compress_block(&stdout) {
         Outcome::Compressed {
             wire,

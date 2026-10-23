@@ -22,6 +22,7 @@ pub fn serve(home: &Path) -> ExitCode {
             crate::proxy::store_dir(home),
             crate::proxy::OFFLOAD_TTL,
         ));
+    let (policy, _) = crate::reopen_policy(home);
     let stdin = std::io::stdin();
     let mut stdout = std::io::stdout();
 
@@ -50,6 +51,7 @@ pub fn serve(home: &Path) -> ExitCode {
                 id,
                 &request,
                 &mut optimizer,
+                &policy,
                 counter.as_ref(),
                 home,
             )),
@@ -74,7 +76,9 @@ fn tool_defs() -> Vec<Value> {
                 "type": "object",
                 "properties": {
                     "block": { "type": "string", "description": "The tool output to compress." },
-                    "query": { "type": "string", "description": "Optional request text; relevant rows are kept inline." }
+                    "query": { "type": "string", "description": "Optional request text; for a JSON array of records, the rows most relevant to it are kept inline." },
+                    "tool": { "type": "string", "description": "Optional: the tool that produced the block (Bash, Read, Grep, ...). With it, output that is usually needed whole stays in view instead of being offloaded." },
+                    "command": { "type": "string", "description": "Optional: for Bash, the command that produced the block." }
                 },
                 "required": ["block"]
             }
@@ -104,6 +108,7 @@ fn handle_call(
     id: Option<Value>,
     request: &Value,
     optimizer: &mut Optimizer,
+    policy: &secondwind_optimize::policy::ReopenPolicy,
     counter: &Tiktoken,
     home: &std::path::Path,
 ) -> Value {
@@ -114,12 +119,24 @@ fn handle_call(
     match name {
         "optimize" => {
             let block = args["block"].as_str().unwrap_or("");
+            let mode = optimizer.offload_mode();
+            if let Some(tool) = args["tool"].as_str() {
+                let input = args["command"]
+                    .as_str()
+                    .map(|command| json!({ "command": command }).to_string());
+                let class =
+                    secondwind_optimize::counterfactual::command_class(tool, input.as_deref());
+                if !policy.allows_offload(&class, counter.count(block) as u64) {
+                    optimizer.set_offload_mode(secondwind_optimize::OffloadMode::Off);
+                }
+            }
             let outcome = match args["query"].as_str() {
                 Some(query) if !query.is_empty() => {
                     optimizer.compress_block_with_query(block, query)
                 }
                 _ => optimizer.compress_block(block),
             };
+            optimizer.set_offload_mode(mode);
             let (text, transform, saved_usd, inline) = match outcome {
                 Outcome::Compressed {
                     wire,

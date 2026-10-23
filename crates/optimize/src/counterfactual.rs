@@ -150,13 +150,15 @@ pub struct BlockOutcome {
 }
 
 // Runs the optimizer over every tool result in a trace. Takes a fresh optimizer per trace so the
-// offload store never outlives it. A hidden token counts as needed only when the assistant uses it
+// offload store never outlives it. With a gate, a block whose predicted reopen rate is at or over its
+// threshold is compressed with offloading off, so only inline codecs apply. A hidden token counts as needed only when the assistant uses it
 // before any later tool result or user message supplies it again, so a grep followed by a read of
 // the same file charges the read, not the grep.
 pub fn evaluate(
     trace: &Trace,
     optimizer: &mut crate::Optimizer,
     counter: &dyn crate::tokens::TokenCounter,
+    gate: Option<&crate::policy::ReopenPolicy>,
 ) -> Vec<BlockOutcome> {
     let first_seen = first_seen_index(trace);
     let assistant_tokens = assistant_token_index(trace);
@@ -212,6 +214,11 @@ pub fn evaluate(
             }
             let input = id.as_deref().and_then(|id| calls.get(id)).map(|c| c.1);
             let raw_tokens = counter.count(body) as u64;
+            let class = command_class(tool, input);
+            let mode = optimizer.offload_mode();
+            if gate.is_some_and(|g| !g.allows_offload(&class, raw_tokens)) {
+                optimizer.set_offload_mode(crate::OffloadMode::Off);
+            }
             // Faithful is checked here independently of the optimizer's own gate: an inline wire
             // must decode to the certified content, an offload must resolve to the original.
             let (outcome, sent, hidden_from, faithful) = match optimizer.compress_block(body) {
@@ -227,6 +234,7 @@ pub fn evaluate(
                 }
                 crate::Outcome::KeptVerbatim { .. } => ("verbatim", body.to_string(), None, true),
             };
+            optimizer.set_offload_mode(mode);
             let reopened = hidden_from.is_some_and(|stub| {
                 residual_tokens(body, &stub)
                     .iter()
@@ -234,7 +242,7 @@ pub fn evaluate(
             });
             out.push(BlockOutcome {
                 tool: tool.clone(),
-                class: command_class(tool, input),
+                class,
                 shape: classify(body),
                 outcome,
                 turn: ti,
@@ -483,7 +491,12 @@ mod tests {
 
     fn evaluated(turns: Vec<Turn>) -> Vec<BlockOutcome> {
         let mut optimizer = crate::Optimizer::default();
-        evaluate(&trace(turns), &mut optimizer, &crate::tokens::ByteCounter)
+        evaluate(
+            &trace(turns),
+            &mut optimizer,
+            &crate::tokens::ByteCounter,
+            None,
+        )
     }
 
     #[test]
@@ -508,6 +521,26 @@ mod tests {
         ]);
         assert_eq!(out[0].outcome, "offload");
         assert!(!out[0].reopened, "the model read it from the second result");
+    }
+
+    #[test]
+    fn a_gate_keeps_a_block_it_expects_reopened_in_view() {
+        let mut policy = crate::policy::ReopenPolicy::learn(std::iter::empty(), 1);
+        policy.prior = 0.9;
+        let mut optimizer = crate::Optimizer::default();
+        let out = evaluate(
+            &trace(vec![
+                tool_turn(0, &code_body()),
+                assistant_turn(1, "I will use uniquetoken137 from the results"),
+            ]),
+            &mut optimizer,
+            &crate::tokens::ByteCounter,
+            Some(&policy),
+        );
+        assert_ne!(out[0].outcome, "offload");
+        assert!(!out[0].reopened, "nothing was hidden, so nothing to reopen");
+        assert!(out[0].faithful);
+        assert_eq!(optimizer.offload_mode(), crate::OffloadMode::Auto);
     }
 
     #[test]

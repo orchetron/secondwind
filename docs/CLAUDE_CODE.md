@@ -40,7 +40,8 @@ block has been compressed.
 
 ## What happens to a result
 
-1. A Bash result of 6 KB or more is sent to `secondwind mcp`'s `optimize` tool. Smaller results,
+1. A Bash result of 512 bytes or more is sent to `secondwind mcp`'s `optimize` tool with the
+   command that produced it. Smaller results,
    errors and `stderr` pass through. Claude Code caps a Bash result at 30,000 characters before any
    plugin sees it, so the mod compresses what remains.
 2. The model reads the stub the optimizer returns: a shape-aware preview (a diff summary, a match
@@ -72,7 +73,7 @@ Compressed blocks carry exact token counts read from the binary's ledger. Everyt
 
 ## Limits
 
-- Bash results only, 6 KB and up, after Claude Code's own 30,000-character cap.
+- Bash results only, 512 bytes and up, after Claude Code's own 30,000-character cap.
 - Figures are per session and live in the session's state; `secondwind watch` and the web
   dashboard read the binary's lifetime ledger instead.
 - The pane draws on the terminal and desktop surfaces; the bars are images on the desktop and
